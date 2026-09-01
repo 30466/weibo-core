@@ -1,0 +1,38 @@
+{
+  "name": "weibo-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "API-first Weibo account post crawler CLI",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "weibo": "./bin/weibo.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node bin/weibo.js",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "get-cookie": "node bin/weibo.js login"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "axios": "^1.11.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.6.1",
+    "qrcode": "^1.5.4",
+    "tough-cookie": "^5.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.11",
+    "@types/qrcode": "^1.5.5",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

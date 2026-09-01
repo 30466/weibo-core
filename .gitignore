@@ -1,0 +1,26 @@
+# Dependencies and build output
+/node_modules/
+/dist/
+/coverage/
+*.tsbuildinfo
+
+# Local credentials and session artifacts
+.env
+.env.*
+!.env.example
+/.cache/
+
+# Crawl results and local test artifacts
+/data/
+/test-output/
+/test/local/
+/*.txt
+!/accounts.sample.txt
+
+# Logs and OS/editor files
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
