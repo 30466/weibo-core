@@ -78,7 +78,7 @@ TXT 每行可写数字 UID、微博主页 URL 或账号名称；空行、`#` 注
 
 - `export` 和 `sync` 默认写入 `data/{账号名称}/{uid}.json` 与 `.csv`。
 - 时间字段遵循“绝对时刻存储、北京时间展示”：接口原始时间必须带明确时区，`createdAt`、`updatedAt` 保留 UTC ISO 8601；不要为了下游页面展示而重写为无时区的北京时间字符串。CLI 会显式显示北京时间，高级搜索 `endtime` 固定使用北京时间次日零点。
-- 下游 fansite 合并脚本应原样保留 `createdAt`，只按绝对时刻排序；06:00 归档只属于录播和切片，不适用于微博。
+- 下游 fansite 合并脚本应原样保留 `createdAt`，只按绝对时刻排序；页面统一转换为北京时间显示。
 - JSON 的完整键名、类型和含义以 README 的“JSON 键名完整对照”为准；`textHtml`、`textComplete` 仅供运行时正文补全使用，不会写入导出 JSON。
 - 输出以稳定帖子 `url` 为媒体入口，不保存会过期的图片或音视频 CDN 直链。
 - `crawl.exhausted=true` 才表示两个分页源都自然耗尽；检查 `sourceStats`、`stoppedReason` 和 `filteredOutCount` 后再汇报覆盖情况。
