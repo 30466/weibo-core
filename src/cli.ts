@@ -21,6 +21,7 @@ import {
   verifyCredential,
 } from './auth.js'
 import { SessionManager } from './session.js'
+import { formatBeijingDateTime } from './time.js'
 import type { WeiboAccount } from './types.js'
 
 interface CommonOptions {
@@ -264,7 +265,8 @@ async function cmdList(uidArg: string | undefined, options: CommonOptions & { js
   }
   console.log(`${account.screenName} (UID ${uid})，显示 ${fetched.posts.length} 条：\n`)
   for (const post of fetched.posts) {
-    console.log(`  ${post.id}  ${post.createdAt ?? post.createdAtRaw}`)
+    const publishedAt = formatBeijingDateTime(post.createdAt ?? post.createdAtRaw) || post.createdAtRaw || '时间未知'
+    console.log(`  ${post.id}  ${publishedAt}（北京时间）`)
     console.log(`    ${post.text.replace(/\s+/g, ' ').slice(0, 100)}`)
     console.log(`    赞 ${post.attitudesCount}  评论 ${post.commentsCount}  转发 ${post.repostsCount}`)
     console.log(`    ${post.url}\n`)

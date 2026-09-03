@@ -1,6 +1,6 @@
 import fsp from 'node:fs/promises'
 import path from 'node:path'
-import { fetchAllPosts, getAccount } from '../dist/index.js'
+import { fetchAllPosts, getAccount, getBeijingParts, nextBeijingMidnightUnix } from '../dist/index.js'
 import { WeiboApiClient } from '../dist/api/client.js'
 
 const uid = process.argv[2]
@@ -87,7 +87,7 @@ function sourceDocument(account, fetched, endpoint, request, rows) {
 
 function yearCounts(rows) {
   return Object.fromEntries(Object.entries(rows.reduce((counts, row) => {
-    const year = row.post.createdAt?.slice(0, 4) ?? 'unknown'
+    const year = getBeijingParts(row.post.createdAt ?? row.post.createdAtRaw)?.year ?? 'unknown'
     counts[year] = (counts[year] ?? 0) + 1
     return counts
   }, {})).sort())
@@ -130,8 +130,6 @@ const advancedOnlyRows = allRows.filter(row => row.comparisonStatus === 'advance
 const legacyOnlyRows = allRows.filter(row => row.comparisonStatus === 'legacy_only')
 const bothRows = allRows.filter(row => row.comparisonStatus === 'both')
 
-const nextMidnight = new Date()
-nextMidnight.setHours(24, 0, 0, 0)
 const advancedRequest = {
   uid,
   page: '<1..N>',
@@ -141,7 +139,7 @@ const advancedRequest = {
   haspic: 1,
   hasvideo: 1,
   hasmusic: 1,
-  endtime: Math.floor(nextMidnight.getTime() / 1000),
+  endtime: nextBeijingMidnightUnix(),
 }
 const legacyRequest = { uid, page: '<1..N>', feature: 0 }
 

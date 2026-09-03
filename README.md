@@ -276,6 +276,8 @@ JSON 保存账号资料、抓取覆盖信息，以及按帖子 ID 索引的帖�
 
 不保存图片或视频 CDN 直链：这些地址带短期签名，之后打开可能返回 402/403。需要查看图片、视频或混合媒体时统一打开帖子 `url`。CSV 保留顶层帖子字段，并额外将一层 `retweetedStatus` 展平为 `retweeted_*` 列（包括原帖作者、正文、媒体统计和地址），便于在表格中搜索转发原帖内容；媒体下载不属于本项目范围。
 
+时间采用统一契约：微博接口原始时间必须带明确时区，`createdAt` 和 `updatedAt` 保存为 UTC ISO 8601 绝对时刻；CLI 展示固定转换为 `Asia/Shanghai`。高级搜索的结束日期也按北京时间的次日零点计算，不依赖运行爬虫的电脑时区。下游合并程序应原样保留这些绝对时刻，只按时间排序；录播使用的 06:00 归档规则不适用于微博。
+
 CSV 中 `text`、`media_*` 和 `url` 始终表示顶层微博（也就是转发者自己的评论/媒体及转发地址）；`retweeted_text`、`retweeted_media_*` 和 `retweeted_url` 表示被转发原帖。顶层 `mid`、`user_id`、`created_at_raw` 以及原帖对应的 `retweeted_*` 标识和原始时间字段也会保留。JSON 仍是完整嵌套数据的权威格式，CSV 是方便筛选的扁平副本。
 
 ### JSON 键名完整对照
@@ -392,8 +394,9 @@ const retweets = Object.values(result.posts).filter(post => post.isRetweet)
 
 ```bash
 npm test
+npm run test:time
 ```
 
-公开的 [`test/core.example.test.mjs`](test/core.example.test.mjs) 是可直接执行的回归测试案例，只使用虚构账号、UID、帖子和接口响应。测试覆盖 TXT 混合输入、名称候选解析、HTML 正文、帖子/媒体字段、CSV 转义、跨页去重、双接口顺序枚举、并集来源标记以及共同长微博只补全一次。
+公开的 [`test/core.example.test.mjs`](test/core.example.test.mjs) 是可直接执行的回归测试案例，只使用虚构账号、UID、帖子和接口响应。测试覆盖 TXT 混合输入、名称候选解析、HTML 正文、帖子/媒体字段、CSV 转义、跨页去重、双接口顺序枚举、并集来源标记以及共同长微博只补全一次。[`test/time.test.mjs`](test/time.test.mjs) 覆盖带时区时间规范化、北京时间显示和高级搜索次日零点；`test:time` 会在三个不同的进程时区中重复运行。
 
 维护者可以在本地 `test/local/` 保存包含真实调研标识的测试副本；该目录已被 `.gitignore` 排除，`npm test` 也不会扫描子目录，因此不会进入源码分发或自动测试。真实联网对照输出仍保存在同样被忽略的 `test-output/` 和 `data/` 中。

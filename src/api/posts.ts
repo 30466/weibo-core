@@ -1,5 +1,6 @@
 import { htmlToText } from '../html.js'
 import { mapConcurrent } from '../concurrency.js'
+import { nextBeijingMidnightUnix, toUtcIso } from '../time.js'
 import type {
   CrawlSourceMeta,
   ProfileListingEndpoint,
@@ -41,8 +42,7 @@ function numberValue(value: unknown): number {
 }
 
 function isoDate(value: string): string | null {
-  const time = Date.parse(value)
-  return Number.isFinite(time) ? new Date(time).toISOString() : null
+  return toUtcIso(value)
 }
 
 function extractMediaSummary(raw: RawObject): {
@@ -185,12 +185,6 @@ export interface FetchPostsResult {
   stoppedReason: 'exhausted' | 'limit' | 'max-pages' | 'pagination-stalled'
   fullTextFailures: number
   filteredOutCount: number
-}
-
-function nextLocalMidnightUnix(now = new Date()): number {
-  const end = new Date(now)
-  end.setHours(24, 0, 0, 0)
-  return Math.floor(end.getTime() / 1000)
 }
 
 async function fetchProfilePage(
@@ -370,7 +364,7 @@ async function fetchPostsFromSource(
   const detailConcurrency = Math.max(1, Math.floor(options.detailConcurrency ?? 3))
   // Keep one fixed boundary for the whole crawl so a run crossing midnight
   // cannot change its result set between pages.
-  const searchEndTime = nextLocalMidnightUnix()
+  const searchEndTime = nextBeijingMidnightUnix()
   const posts: WeiboPost[] = []
   const seen = new Set<string>()
   let page = 1

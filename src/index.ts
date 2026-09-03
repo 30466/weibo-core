@@ -13,6 +13,13 @@ export { exportAccount, postsToCsv } from './export.js'
 export { parseAccountInput, parseAccountList } from './input.js'
 export { htmlToText, decodeHtmlEntities } from './html.js'
 export {
+  BEIJING_TIME_ZONE,
+  formatBeijingDateTime,
+  getBeijingParts,
+  nextBeijingMidnightUnix,
+  toUtcIso,
+} from './time.js'
+export {
   loginWithQr,
   verifyCredential,
   saveCredential,

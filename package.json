@@ -17,6 +17,7 @@
     "dev": "tsx src/cli.ts",
     "start": "node bin/weibo.js",
     "test": "npm run build && node --test test/*.test.mjs",
+    "test:time": "npm run build && TZ=Asia/Shanghai node --test test/time.test.mjs && TZ=UTC node --test test/time.test.mjs && TZ=America/New_York node --test test/time.test.mjs",
     "get-cookie": "node bin/weibo.js login"
   },
   "engines": {
