@@ -623,9 +623,13 @@ test('AsyncTwoPhaseGate can release phase two when a phase-one task fails before
   assert.equal(await secondStarted, true)
 })
 
-test('deep-page 414 retries use a long cooldown window', () => {
+test('414 and 418 retries use a long cooldown window', () => {
   assert.deepEqual(
     [0, 1].map(attempt => retryDelayMs(414, attempt)),
+    [180_000, 300_000],
+  )
+  assert.deepEqual(
+    [0, 1].map(attempt => retryDelayMs(418, attempt)),
     [180_000, 300_000],
   )
   assert.deepEqual(

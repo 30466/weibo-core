@@ -35,9 +35,9 @@ function envNonNegativeInteger(name: string, fallback: number): number {
 
 export function retryDelayMs(status: number | undefined, attempt: number): number {
   // There are three attempts in total, so only attempts 0 and 1 have a
-  // following retry. A deep-page 414 usually needs a much longer recovery
-  // window than a normal transient network error.
-  if (status === 414) return [180_000, 300_000][attempt] ?? 300_000
+  // following retry. A deep-page 414 or anti-crawl 418 usually needs a much
+  // longer recovery window than a normal transient network error.
+  if (status === 414 || status === 418) return [180_000, 300_000][attempt] ?? 300_000
   return Math.min(30_000, 1_000 * 2 ** attempt)
 }
 
