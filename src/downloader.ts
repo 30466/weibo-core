@@ -30,6 +30,7 @@ export interface DownloadPostOptions {
   includeRetweet?: boolean
   downloadImages?: boolean
   downloadVideos?: boolean
+  downloadAudios?: boolean
   force?: boolean
   screenName?: string
   createdAt?: string | null
@@ -54,6 +55,7 @@ export interface DownloadPostResult {
   manifestPath: string
   files: DownloadedMediaFile[]
   unresolvedVideoCount: number
+  unresolvedAudioCount: number
 }
 
 export interface BatchDownloadOptions extends DownloadPostOptions {
@@ -91,6 +93,9 @@ interface ManifestEntry {
   height: number | null
   bitrate: number | null
   quality: string
+  title: string | null
+  publisherName: string | null
+  publishedAtRaw: string | null
   mimeType: string
   bytes: number
   sha256: string
@@ -108,11 +113,18 @@ function sanitizePathSegment(value: string): string {
   return value.replace(/[\u0000-\u001f/\\?%*:|"<>]/g, '_').trim() || 'unknown'
 }
 
-function postFolderName(value: string | null | undefined, postId: string): string {
-  const parsed = value ? new Date(value) : null
-  if (!parsed || Number.isNaN(parsed.getTime())) {
-    return `unknown-time_${sanitizePathSegment(postId)}`
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = ''
+  for (const character of value) {
+    if (Buffer.byteLength(result + character, 'utf8') > maxBytes) break
+    result += character
   }
+  return result || 'unknown'
+}
+
+function beijingTimestamp(value: string | null | undefined): string | null {
+  const parsed = value ? new Date(value) : null
+  if (!parsed || Number.isNaN(parsed.getTime())) return null
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -128,19 +140,38 @@ function postFolderName(value: string | null | undefined, postId: string): strin
   const timestamp =
     `${valueOf('year')}-${valueOf('month')}-${valueOf('day')}_` +
     `${valueOf('hour')}-${valueOf('minute')}-${valueOf('second')}`
+  return timestamp
+}
+
+function postFolderName(value: string | null | undefined, postId: string): string {
+  const timestamp = beijingTimestamp(value)
+  if (!timestamp) return `unknown-time_${sanitizePathSegment(postId)}`
   return `${timestamp}_${sanitizePathSegment(postId)}`
 }
 
-function filenameFor(item: ResolvedMediaItem): string {
+function filenameFor(
+  item: ResolvedMediaItem,
+  fallbackPublishedAt: string | null | undefined,
+  fallbackPublisher: string,
+): string {
   const prefix = item.source === 'post'
     ? 'post'
     : `retweeted_${sanitizePathSegment(item.sourcePostId)}`
+  const extension = /^\.[a-zA-Z0-9]{2,5}$/.test(item.extension) ? item.extension.toLowerCase() : '.bin'
+  if (item.kind === 'audio') {
+    const title = truncateUtf8(sanitizePathSegment(item.title || 'audio'), 120)
+    const timestamp = beijingTimestamp(item.publishedAtRaw ?? fallbackPublishedAt) ?? 'unknown-time'
+    const publisher = truncateUtf8(
+      sanitizePathSegment(item.publisherName || fallbackPublisher || 'unknown'),
+      60,
+    )
+    return `${title}_${timestamp}_${publisher}${extension}`
+  }
   const suffix = item.kind === 'video'
     ? `v${item.index}`
     : item.kind.startsWith('live-photo')
       ? `lp${item.index}`
       : `p${item.index}`
-  const extension = /^\.[a-zA-Z0-9]{2,5}$/.test(item.extension) ? item.extension.toLowerCase() : '.bin'
   return `${prefix}_${suffix}${extension}`
 }
 
@@ -151,7 +182,9 @@ function isImage(item: ResolvedMediaItem): boolean {
 function itemSelected(item: ResolvedMediaItem, options: DownloadPostOptions): boolean {
   const images = options.downloadImages !== false
   const videos = options.downloadVideos !== false
-  return isImage(item) ? images : videos
+  const audios = options.downloadAudios !== false
+  if (isImage(item)) return images
+  return item.kind === 'audio' ? audios : videos
 }
 
 function expiringSoon(item: ResolvedMediaItem): boolean {
@@ -271,8 +304,8 @@ export async function downloadPostMedia(
   postInput: string,
   options: DownloadPostOptions = {},
 ): Promise<DownloadPostResult> {
-  if (options.downloadImages === false && options.downloadVideos === false) {
-    throw new Error('图片和视频不能同时排除')
+  if (options.downloadImages === false && options.downloadVideos === false && options.downloadAudios === false) {
+    throw new Error('图片、视频和音频不能同时排除')
   }
   const client = options.client ?? new WeiboApiClient()
   options.onProgress?.({ phase: 'resolving', postId: postInput })
@@ -280,6 +313,9 @@ export async function downloadPostMedia(
     client,
     includeRetweet: options.includeRetweet !== false,
   })
+  if (options.downloadAudios !== false && resolved.unresolvedAudioCount > 0) {
+    throw new Error(`微博 ${resolved.postId} 有 ${resolved.unresolvedAudioCount} 个音频未能取得播放流`)
+  }
   const screenName = sanitizePathSegment(options.screenName || resolved.screenName || 'unknown')
   const accountDir = path.resolve(options.outputDir ?? 'downloads', screenName)
   const postDir = path.join(
@@ -297,7 +333,10 @@ export async function downloadPostMedia(
       options.onProgress?.({ phase: 'refreshing', postId: resolved.postId, item })
       item = await refreshItem(resolved.postId, original, client, options.includeRetweet !== false)
     }
-    const destination = path.join(postDir, filenameFor(item))
+    const destination = path.join(
+      postDir,
+      filenameFor(item, options.createdAt ?? resolved.createdAtRaw, resolved.screenName),
+    )
     options.onProgress?.({ phase: 'downloading', postId: resolved.postId, item, filePath: destination })
     let downloaded: Awaited<ReturnType<typeof downloadUrlToFile>>
     try {
@@ -330,6 +369,9 @@ export async function downloadPostMedia(
       height: item.height,
       bitrate: item.bitrate,
       quality: item.quality,
+      title: item.title,
+      publisherName: item.publisherName ?? null,
+      publishedAtRaw: item.publishedAtRaw ?? null,
       mimeType: item.mimeType,
       bytes: file.bytes,
       sha256: file.sha256,
@@ -352,15 +394,20 @@ export async function downloadPostMedia(
     manifestPath,
     files,
     unresolvedVideoCount: resolved.unresolvedVideoCount,
+    unresolvedAudioCount: resolved.unresolvedAudioCount,
   }
 }
 
 function postHasSelectedMedia(post: ExportedWeiboPost, options: BatchDownloadOptions): boolean {
   const own = (options.downloadImages !== false && post.pictureCount > 0) ||
-    (options.downloadVideos !== false && post.videoCount > 0)
+    (options.downloadVideos !== false && post.videoCount > 0) ||
+    (options.downloadAudios !== false && (post.mediaType === 'audio' || Boolean(post.audioTitle)))
   if (own || options.includeRetweet === false || !post.retweetedStatus) return own
   return (options.downloadImages !== false && post.retweetedStatus.pictureCount > 0) ||
-    (options.downloadVideos !== false && post.retweetedStatus.videoCount > 0)
+    (options.downloadVideos !== false && post.retweetedStatus.videoCount > 0) ||
+    (options.downloadAudios !== false && (
+      post.retweetedStatus.mediaType === 'audio' || Boolean(post.retweetedStatus.audioTitle)
+    ))
 }
 
 function postBeijingParts(post: ExportedWeiboPost): { year: number; month: number } | null {

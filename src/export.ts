@@ -18,14 +18,14 @@ export function postsToCsv(posts: Record<string, ExportedWeiboPost>): string {
   const headers = [
     'id', 'bid', 'created_at', 'screen_name', 'text', 'source', 'region_name',
     'attitudes_count', 'comments_count', 'reposts_count', 'is_pinned', 'is_retweet',
-    'media_type', 'media_count', 'picture_count', 'video_count', 'listing_sources', 'url',
+    'media_type', 'media_count', 'picture_count', 'video_count', 'audio_title', 'listing_sources', 'url',
     'mid', 'user_id', 'created_at_raw',
     'retweeted_id', 'retweeted_mid', 'retweeted_bid', 'retweeted_created_at',
     'retweeted_created_at_raw', 'retweeted_user_id', 'retweeted_screen_name', 'retweeted_text',
     'retweeted_source', 'retweeted_region_name', 'retweeted_attitudes_count',
     'retweeted_comments_count', 'retweeted_reposts_count', 'retweeted_is_pinned',
     'retweeted_is_retweet', 'retweeted_media_type', 'retweeted_media_count',
-    'retweeted_picture_count', 'retweeted_video_count', 'retweeted_listing_sources',
+    'retweeted_picture_count', 'retweeted_video_count', 'retweeted_audio_title', 'retweeted_listing_sources',
     'retweeted_url',
   ]
   const rows = Object.values(posts).map(post => [
@@ -45,6 +45,7 @@ export function postsToCsv(posts: Record<string, ExportedWeiboPost>): string {
     post.mediaCount,
     post.pictureCount,
     post.videoCount,
+    post.audioTitle ?? '',
     post.listingSources.join('|'),
     post.url,
     post.mid,
@@ -71,6 +72,7 @@ export function postsToCsv(posts: Record<string, ExportedWeiboPost>): string {
     post.retweetedStatus?.mediaCount ?? '',
     post.retweetedStatus?.pictureCount ?? '',
     post.retweetedStatus?.videoCount ?? '',
+    post.retweetedStatus?.audioTitle ?? '',
     post.retweetedStatus?.listingSources?.join('|') ?? '',
     post.retweetedStatus?.url ?? '',
   ].map(csvEscape).join(','))

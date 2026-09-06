@@ -14,7 +14,7 @@ export interface WeiboAccount extends WeiboUserResult {
   profileUrl: string
 }
 
-export type WeiboMediaType = 'none' | 'pictures' | 'video' | 'mixed' | 'link'
+export type WeiboMediaType = 'none' | 'pictures' | 'video' | 'audio' | 'mixed' | 'link'
 
 export interface WeiboPost {
   id: string
@@ -40,6 +40,7 @@ export interface WeiboPost {
   mediaCount: number
   pictureCount: number
   videoCount: number
+  audioTitle: string | null
   retweetedStatus: WeiboPost | null
 }
 

@@ -91,6 +91,33 @@ test('mixed media, Live Photo, GIF, and retweeted media remain separate', () => 
   assert.deepEqual(parsed.items.map(item => item.source), ['post', 'post', 'retweeted', 'retweeted'])
 })
 
+test('podcast audio resolves as a signed MP3 with a stable title but no public URL', () => {
+  const parsed = parseStatusMedia({
+    id: 'audio-post',
+    page_info: {
+      object_type: 'podcast_audio',
+      object_id: 'audio-object',
+      card_info: { title: 'Onelife' },
+      media_info: {
+        media_id: 'audio-media',
+        duration: 238,
+        stream_url: 'https://audio.example/track.mp3?Expires=2000000000&ssig=secret',
+      },
+    },
+  })
+  assert.equal(parsed.unresolvedAudioCount, 0)
+  assert.equal(parsed.items.length, 1)
+  assert.equal(parsed.items[0].kind, 'audio')
+  assert.equal(parsed.items[0].extension, '.mp3')
+  assert.equal(parsed.items[0].mimeType, 'audio/mpeg')
+  assert.equal(parsed.items[0].title, 'Onelife')
+  assert.equal(parsed.items[0].publisherName, null)
+  const safe = publicMediaItem(parsed.items[0])
+  assert.equal(safe.title, 'Onelife')
+  assert.equal('url' in safe, false)
+  assert.equal(JSON.stringify(safe).includes('ssig'), false)
+})
+
 test('post input accepts numeric IDs, BIDs, and desktop/mobile links', () => {
   assert.equal(postIdFromInput('123456'), '123456')
   assert.equal(postIdFromInput('AbC12x'), 'AbC12x')
@@ -159,6 +186,52 @@ test('post downloader writes stable files and a manifest without CDN URLs', asyn
   assert.doesNotMatch(manifestText, /token=secret|127\.0\.0\.1/)
   const manifest = JSON.parse(manifestText)
   assert.equal(Object.values(manifest.entries)[0].quality, 'largest')
+})
+
+test('audio-only download writes MP3 and title without persisting its signed URL', async t => {
+  const payload = Buffer.from('ID3-audio-body')
+  const server = createServer((_request, response) => {
+    response.setHeader('Content-Type', 'audio/mpeg')
+    response.end(payload)
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const address = server.address()
+  const root = await mkdtemp(path.join(tmpdir(), 'weibo-audio-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const mediaUrl = `http://127.0.0.1:${address.port}/track.mp3?Expires=2000000000&ssig=secret`
+  const fakeClient = {
+    async getRaw() {
+      return {
+        id: '902',
+        mblogid: 'Audio902',
+        created_at: 'Wed Jul 15 15:37:05 +0800 2026',
+        user: { id: '8', screen_name: '音频账号' },
+        page_info: {
+          object_type: 'podcast_audio',
+          object_id: 'audio-object',
+          card_info: { title: 'Onelife' },
+          media_info: { stream_url: mediaUrl },
+        },
+      }
+    },
+  }
+  const result = await downloadPostMedia('902', {
+    client: fakeClient,
+    outputDir: root,
+    downloadImages: false,
+    downloadVideos: false,
+    downloadAudios: true,
+  })
+  assert.equal(result.files.length, 1)
+  assert.match(
+    result.files[0].path,
+    /音频账号\/2026-07-15_15-37-05_902\/Onelife_2026-07-15_15-37-05_音频账号\.mp3$/,
+  )
+  assert.deepEqual(await readFile(result.files[0].path), payload)
+  const manifestText = await readFile(result.manifestPath, 'utf8')
+  assert.match(manifestText, /"title": "Onelife"/)
+  assert.doesNotMatch(manifestText, /ssig|secret|127\.0\.0\.1/)
 })
 
 test('post downloader refreshes a rejected signed URL and retries the same media', async t => {

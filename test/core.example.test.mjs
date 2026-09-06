@@ -102,6 +102,58 @@ test('mixed-media posts keep counts but no expiring CDN links', () => {
   assert.equal('video' in post, false)
 })
 
+test('podcast audio keeps its semantic type and stable title without media URLs', () => {
+  const post = normalizePost({
+    id: '13', bid: 'Audio', text: '微博音频', user: { id: 9 },
+    page_info: {
+      object_type: 'podcast_audio',
+      page_title: '账号的微博音频',
+      page_url: 'https://video.example/show?temporary=1',
+      media_info: { stream_url: 'https://audio.example/signed.mp4' },
+      card_info: { title: 'Onelife' },
+    },
+  })
+  assert.equal(post.mediaType, 'audio')
+  assert.equal(post.mediaCount, 1)
+  assert.equal(post.audioTitle, 'Onelife')
+  assert.equal('pageInfo' in post, false)
+  assert.equal(JSON.stringify(post).includes('audio.example'), false)
+})
+
+test('missing podcast title is fetched once from post detail after pagination', async () => {
+  const calls = []
+  const fakeClient = {
+    async get(path) {
+      calls.push(path)
+      return {
+        total: 1,
+        list: [{
+          id: '13', bid: 'Audio', text: '微博音频', user: { id: 9 },
+          page_info: { object_type: 'podcast_audio', page_title: '账号的微博音频' },
+        }],
+      }
+    },
+    async getRaw(path, params) {
+      calls.push(`${path}:${params.id}`)
+      return {
+        id: '13',
+        page_info: {
+          object_type: 'podcast_audio',
+          media_info: { stream_url: 'https://audio.example/signed.mp4' },
+          card_info: { title: 'Onelife' },
+        },
+      }
+    },
+  }
+  const result = await fetchAllPosts('9', {
+    listingSource: 'profile-search', limit: 1, fetchLongText: false,
+  }, fakeClient)
+  assert.equal(result.posts[0].audioTitle, 'Onelife')
+  assert.equal(result.audioTitleFailures, 0)
+  assert.deepEqual(calls, ['/ajax/statuses/searchProfile', '/ajax/statuses/show:13'])
+  assert.equal(JSON.stringify(result.posts[0]).includes('audio.example'), false)
+})
+
 test('deleted retweet originals do not produce empty fake post links', () => {
   const post = normalizePost({
     id: '12', bid: 'Top', text: 'repost', user: { id: 9 },

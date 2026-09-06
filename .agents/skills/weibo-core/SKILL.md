@@ -1,6 +1,6 @@
 ---
 name: weibo-core
-description: Operate the local weibo-core CLI to log in to Weibo, resolve account names or UIDs, crawl/export posts, download original images and highest-available-quality videos, and process TXT account lists. Use this skill whenever the user asks to抓取微博账号帖子、按微博名称或 UID 导出、批量同步微博账号、下载微博原图或视频、检查微博登录，或处理 weibo-core。登录默认使用纯 HTTP 二维码；二维码持续失败时，本技能必须让用户选择是否使用当前 Agent 已有的浏览器自动化能力作为备用方案。
+description: Operate the local weibo-core CLI to log in to Weibo, resolve account names or UIDs, crawl/export posts, download original images, highest-available-quality videos, and Weibo audio, and process TXT account lists. Use this skill whenever the user asks to抓取微博账号帖子、按微博名称或 UID 导出、批量同步微博账号、下载微博原图、视频或音频、检查微博登录，或处理 weibo-core。登录默认使用纯 HTTP 二维码；二维码持续失败时，本技能必须让用户选择是否使用当前 Agent 已有的浏览器自动化能力作为备用方案。
 ---
 
 # weibo-core
@@ -56,13 +56,15 @@ TXT 每行可写数字 UID、微博主页 URL 或账号名称；空行、`#` 注
 - 下载单条全部媒体：`node bin/weibo.js download <帖子ID/BID/链接>`
 - 只下载原图/GIF/Live Photo 静态图：`node bin/weibo.js download <帖子> --images-only`
 - 只下载视频/Live Photo 动态文件：`node bin/weibo.js download <帖子> --videos-only`
+- 只下载微博音频：`node bin/weibo.js download <帖子> --audios-only`
 - 从第一阶段 JSON 批量下载：`node bin/weibo.js batch-download <账号JSON>`
+- 从第一阶段 JSON 只下载音频：`node bin/weibo.js batch-download <账号JSON> --audios-only`
 - 按北京时间年份筛选下载：`node bin/weibo.js batch-download <账号JSON> --year 2026`
 - 按北京时间年月筛选下载：`node bin/weibo.js batch-download <账号JSON> --year 2026 --month 8`
 
 `--year`/`--month` 只筛选第一阶段 JSON 中按北京时间记录的帖子发布时间；`--month` 必须与 `--year` 同时指定。批量下载必须逐条执行“即时解析→立即下载”，不要预先解析全量帖子并保存 CDN URL。视频地址带短时签名并可能每次变化；CLI 会在地址临近过期或 CDN 返回 401/402/403/404/410 时刷新同一帖子的媒体详情并重试。第一阶段 JSON/CSV 始终只保存稳定帖子 ID 和 `url`，第二阶段 `download-manifest.json` 也不得保存临时 CDN URL 或 Cookie。
 
-图片取详情接口的 `largest`，GIF 保持 `.gif`，Live Photo 同时保存静态图和 `.mov`。视频选登录账号当前可见的 `playback_list` 最高可用画质；这表示最高播放档，不保证等于上传原始母版。当前微博样本的视频是已含音轨的完整 MP4，可直接保存而无需额外拆分或合并。默认包含被转发原帖媒体，用户只要顶层微博时使用 `--no-retweet`。
+图片取详情接口的 `largest`，GIF 保持 `.gif`，Live Photo 同时保存静态图和 `.mov`。视频选登录账号当前可见的 `playback_list` 最高可用画质；这表示最高播放档，不保证等于上传原始母版。当前微博样本的视频是已含音轨的完整 MP4，可直接保存而无需额外拆分或合并。微博 `podcast_audio` 使用详情接口当次返回的签名 MP3 流，按“音频标题_北京时间发布时间_发布人账号名称.mp3”命名，标题缺失时使用 `audio`，并清洗路径非法字符。默认包含被转发原帖媒体，用户只要顶层微博时使用 `--no-retweet`。
 
 下载目录为 `downloads/{账号名称}/{北京时间 YYYY-MM-DD_HH-mm-ss}_{微博ID}/`，账号根目录另有不含 URL 的 `download-manifest.json`。发布时间便于自然排序，微博 ID 避免同秒发布或时间修正造成冲突；缺少有效时间时使用 `unknown-time_{微博ID}`。完整文件默认跳过；中断遗留的 `.part` 会尝试 Range 续传；只有用户明确要求覆盖时才使用 `--force`。媒体详情请求使用保存的登录 Cookie，但下载器不会把 Cookie 转发给图片/视频 CDN。
 
@@ -96,7 +98,7 @@ TXT 每行可写数字 UID、微博主页 URL 或账号名称；空行、`#` 注
 - 时间字段遵循“绝对时刻存储、北京时间展示”：接口原始时间必须带明确时区，`createdAt`、`updatedAt` 保留 UTC ISO 8601；不要为了下游页面展示而重写为无时区的北京时间字符串。CLI 会显式显示北京时间，高级搜索 `endtime` 固定使用北京时间次日零点。
 - 下游 fansite 合并脚本应原样保留 `createdAt`，只按绝对时刻排序；页面统一转换为北京时间显示。
 - JSON 的完整键名、类型和含义以 README 的“JSON 键名完整对照”为准；`textHtml`、`textComplete` 仅供运行时正文补全使用，不会写入导出 JSON。
-- 第一阶段输出以稳定帖子 `url` 为媒体入口，不保存会过期的图片或音视频 CDN 直链；第二阶段下载清单只保存文件元数据和相对路径。
+- 第一阶段输出以稳定帖子 `url` 为媒体入口，不保存会过期的图片或音视频 CDN 直链；微博音频另以 `audioTitle` 保存稳定标题，缺失时只按帖子 ID 请求详情补全标题。第二阶段下载清单只保存文件元数据和相对路径。
 - `crawl.exhausted=true` 才表示两个分页源都自然耗尽；检查 `sourceStats`、`stoppedReason` 和 `filteredOutCount` 后再汇报覆盖情况。
 
 ## 测试与本地资料

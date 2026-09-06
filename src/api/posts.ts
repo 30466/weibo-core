@@ -45,6 +45,27 @@ function isoDate(value: string): string | null {
   return toUtcIso(value)
 }
 
+function isAudioPage(raw: RawObject): boolean {
+  const pageInfo = raw.page_info
+  if (!pageInfo || typeof pageInfo !== 'object') return false
+  const objectType = String(pageInfo.object_type ?? '').toLowerCase()
+  return objectType === 'podcast_audio' || objectType === 'audio'
+}
+
+function extractAudioTitle(raw: RawObject): string | null {
+  if (!isAudioPage(raw)) return null
+  const pageInfo = raw.page_info ?? {}
+  const candidates = [
+    pageInfo.card_info?.title,
+    pageInfo.media_info?.title,
+  ]
+  for (const candidate of candidates) {
+    const title = htmlToText(String(candidate ?? '')).trim()
+    if (title) return title
+  }
+  return null
+}
+
 function extractMediaSummary(raw: RawObject): {
   mediaType: WeiboMediaType
   mediaCount: number
@@ -64,8 +85,14 @@ function extractMediaSummary(raw: RawObject): {
   if (pictureCount > 0 && videoCount > 0) mediaType = 'mixed'
   else if (videoCount > 0) mediaType = 'video'
   else if (pictureCount > 0) mediaType = 'pictures'
+  else if (isAudioPage(raw)) mediaType = 'audio'
   else if (raw.page_info && typeof raw.page_info === 'object') mediaType = 'link'
-  return { mediaType, mediaCount: mediaCount || (mediaType === 'link' ? 1 : 0), pictureCount, videoCount }
+  return {
+    mediaType,
+    mediaCount: mediaCount || (mediaType === 'link' || mediaType === 'audio' ? 1 : 0),
+    pictureCount,
+    videoCount,
+  }
 }
 
 export function needsLongText(raw: RawObject): boolean {
@@ -118,6 +145,7 @@ export function normalizePost(raw: RawObject, pinned = false): WeiboPost {
     isRetweet: hasRetweetedStatus,
     listingSources: [],
     ...media,
+    audioTitle: extractAudioTitle(raw),
     retweetedStatus: retweeted,
   }
 }
@@ -149,8 +177,10 @@ export interface FetchPostsOptions {
   limit?: number
   maxPages?: number
   fetchLongText?: boolean
+  /** Internal switch used while combined mode enumerates each source before merging. */
+  enrichDetails?: boolean
   detailConcurrency?: number
-  /** Optional separately throttled client for long-text detail requests. */
+  /** Optional separately throttled client for long-text and audio-title detail requests. */
   detailClient?: WeiboApiClient
   /** Optional client dedicated to the legacy profile timeline. */
   profileFeedClient?: WeiboApiClient
@@ -184,6 +214,7 @@ export interface FetchPostsResult {
   exhausted: boolean
   stoppedReason: 'exhausted' | 'limit' | 'max-pages' | 'pagination-stalled'
   fullTextFailures: number
+  audioTitleFailures: number
   filteredOutCount: number
 }
 
@@ -246,6 +277,60 @@ async function enrichLongText(post: WeiboPost, client: WeiboApiClient): Promise<
   }
 }
 
+function needsAudioTitle(post: WeiboPost): boolean {
+  return (post.mediaType === 'audio' && !post.audioTitle) ||
+    (post.retweetedStatus?.mediaType === 'audio' && !post.retweetedStatus.audioTitle)
+}
+
+async function enrichAudioTitle(post: WeiboPost, client: WeiboApiClient): Promise<boolean> {
+  if (!needsAudioTitle(post)) return true
+  try {
+    const raw = await client.getRaw<RawObject>('/ajax/statuses/show', {
+      id: post.id,
+      locale: 'zh-CN',
+      isGetLongText: 'true',
+    })
+    if (post.mediaType === 'audio' && !post.audioTitle) {
+      post.audioTitle = extractAudioTitle(raw)
+    }
+    if (post.retweetedStatus?.mediaType === 'audio' && !post.retweetedStatus.audioTitle) {
+      post.retweetedStatus.audioTitle = extractAudioTitle(raw.retweeted_status ?? {})
+    }
+    return !needsAudioTitle(post)
+  } catch {
+    return false
+  }
+}
+
+async function enrichPostDetails(
+  posts: WeiboPost[],
+  options: FetchPostsOptions,
+  client: WeiboApiClient,
+): Promise<{ fullTextFailures: number; audioTitleFailures: number }> {
+  const longTextPending = options.fetchLongText === false
+    ? []
+    : posts.filter(post => !post.textComplete)
+  const audioPending = posts.filter(needsAudioTitle)
+  const detailConcurrency = Math.max(1, Math.floor(options.detailConcurrency ?? 3))
+  const total = longTextPending.length + audioPending.length
+  let completed = 0
+
+  const longTextOutcomes = await mapConcurrent(longTextPending, detailConcurrency, async post => {
+    const ok = await enrichLongText(post, options.detailClient ?? client)
+    options.onDetail?.(++completed, total)
+    return ok
+  })
+  const audioOutcomes = await mapConcurrent(audioPending, detailConcurrency, async post => {
+    const ok = await enrichAudioTitle(post, options.detailClient ?? client)
+    options.onDetail?.(++completed, total)
+    return ok
+  })
+  return {
+    fullTextFailures: longTextOutcomes.filter(ok => !ok).length,
+    audioTitleFailures: audioOutcomes.filter(ok => !ok).length,
+  }
+}
+
 export async function fetchAllPosts(
   uid: string,
   options: FetchPostsOptions = {},
@@ -264,7 +349,7 @@ export async function fetchAllPosts(
   // searchProfile return fewer IDs, while an immediate standalone rerun
   // recovered them. Details remain disabled until after the union, so a post
   // returned by both sources is enriched only once.
-  const sourceOptions: FetchPostsOptions = { ...options, fetchLongText: false }
+  const sourceOptions: FetchPostsOptions = { ...options, fetchLongText: false, enrichDetails: false }
   const advanced = await fetchPostsFromSource(uid, 'profile-search', sourceOptions, client)
   const legacy = await fetchPostsFromSourceWithGate(
     uid,
@@ -284,9 +369,11 @@ export async function fetchAllPosts(
 
       const sources = [...new Set([...existing.listingSources, ...post.listingSources])]
       const existingScore =
-        (existing.textComplete ? 1_000_000 : 0) + existing.text.length + existing.mediaCount * 10
+        (existing.textComplete ? 1_000_000 : 0) + existing.text.length + existing.mediaCount * 10 +
+        (existing.audioTitle ? 100 : 0)
       const candidateScore =
-        (post.textComplete ? 1_000_000 : 0) + post.text.length + post.mediaCount * 10
+        (post.textComplete ? 1_000_000 : 0) + post.text.length + post.mediaCount * 10 +
+        (post.audioTitle ? 100 : 0)
       const chosen = candidateScore > existingScore ? post : existing
       chosen.listingSources = sources
       chosen.isPinned = existing.isPinned || post.isPinned
@@ -304,18 +391,7 @@ export async function fetchAllPosts(
     })
     .slice(0, limit)
 
-  let fullTextFailures = 0
-  if (options.fetchLongText !== false) {
-    const pending = posts.filter(post => !post.textComplete)
-    const detailConcurrency = Math.max(1, Math.floor(options.detailConcurrency ?? 3))
-    let completed = 0
-    const outcomes = await mapConcurrent(pending, detailConcurrency, async post => {
-      const ok = await enrichLongText(post, options.detailClient ?? client)
-      options.onDetail?.(++completed, pending.length)
-      return ok
-    })
-    fullTextFailures = outcomes.filter(ok => !ok).length
-  }
+  const details = await enrichPostDetails(posts, options, client)
 
   let stoppedReason: FetchPostsResult['stoppedReason']
   if (Number.isFinite(limit) && posts.length >= limit) stoppedReason = 'limit'
@@ -334,7 +410,7 @@ export async function fetchAllPosts(
     pagesFetched: advanced.pagesFetched + legacy.pagesFetched,
     exhausted: stoppedReason === 'exhausted',
     stoppedReason,
-    fullTextFailures,
+    ...details,
     filteredOutCount: advanced.filteredOutCount + legacy.filteredOutCount,
   }
 }
@@ -360,8 +436,6 @@ async function fetchPostsFromSource(
 ): Promise<FetchPostsResult> {
   const limit = options.limit && options.limit > 0 ? options.limit : Number.POSITIVE_INFINITY
   const maxPages = options.maxPages && options.maxPages > 0 ? options.maxPages : Number.POSITIVE_INFINITY
-  const fetchLongText = options.fetchLongText !== false
-  const detailConcurrency = Math.max(1, Math.floor(options.detailConcurrency ?? 3))
   // Keep one fixed boundary for the whole crawl so a run crossing midnight
   // cannot change its result set between pages.
   const searchEndTime = nextBeijingMidnightUnix()
@@ -372,6 +446,7 @@ async function fetchPostsFromSource(
   let pagesFetched = 0
   let reportedTotal: number | null = null
   let fullTextFailures = 0
+  let audioTitleFailures = 0
   let filteredOutCount = 0
   let stoppedReason: FetchPostsResult['stoppedReason'] | null = null
   const profileFeedDeepThreshold = Math.max(
@@ -463,16 +538,11 @@ async function fetchPostsFromSource(
   if (stoppedReason === null) stoppedReason = pagesFetched >= maxPages ? 'max-pages' : 'exhausted'
 
   // Phase 2: page discovery is complete. Fetch only genuinely truncated
-  // bodies, with bounded concurrency, so detail calls never block pagination.
-  if (fetchLongText) {
-    const pending = posts.filter(post => !post.textComplete)
-    let completed = 0
-    const outcomes = await mapConcurrent(pending, detailConcurrency, async post => {
-      const ok = await enrichLongText(post, options.detailClient ?? client)
-      options.onDetail?.(++completed, pending.length)
-      return ok
-    })
-    fullTextFailures = outcomes.filter(ok => !ok).length
+  // bodies and missing audio titles, so detail calls never block pagination.
+  if (options.enrichDetails !== false) {
+    const details = await enrichPostDetails(posts, options, client)
+    fullTextFailures = details.fullTextFailures
+    audioTitleFailures = details.audioTitleFailures
   }
 
   const sourceMeta: CrawlSourceMeta = {
@@ -494,6 +564,7 @@ async function fetchPostsFromSource(
     exhausted: stoppedReason === 'exhausted',
     stoppedReason,
     fullTextFailures,
+    audioTitleFailures,
     filteredOutCount,
   }
 }

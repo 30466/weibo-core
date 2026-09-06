@@ -22,7 +22,8 @@
 - 个人页时间线：`weibo.com/ajax/statuses/mymblog?uid=...&page=...`；
 - 账号帖子（默认）：依次枚举上述两个独立数据源，按微博 ID 求并集去重；
 - 长微博正文：仅对 `isLongText` 帖子调用 `weibo.com/ajax/statuses/longtext`；
-- 媒体详情：下载前即时调用 `weibo.com/ajax/statuses/show?id=...`，图片取 `largest`，视频从 `playback_list` 选最高可用画质；旧视频结构再使用 `weibo.com/tv/api/component` 回退。
+- 微博音频标题：识别 `page_info.object_type=podcast_audio`，保存稳定的 `card_info.title`；列表结果缺标题时按帖子 ID 调用详情接口补全，不保存音频播放地址；
+- 媒体详情：下载前即时调用 `weibo.com/ajax/statuses/show?id=...`，图片取 `largest`，视频从 `playback_list` 选最高可用画质，微博音频取当次详情的签名 MP3 流；旧视频结构再使用 `weibo.com/tv/api/component` 回退。
 
 ### 调研来源与实现边界
 
@@ -174,6 +175,7 @@ node bin/weibo.js media https://weibo.com/1000000001/AbCdEf --json
 node bin/weibo.js download https://weibo.com/1000000001/AbCdEf
 node bin/weibo.js download 5000000000000001 --images-only
 node bin/weibo.js download AbCdEf --videos-only --no-retweet
+node bin/weibo.js download AbCdEf --audios-only
 ```
 
 从第一阶段导出的 JSON 批量下载：
@@ -183,28 +185,30 @@ node bin/weibo.js batch-download data/示例账号甲/1000000001.json
 node bin/weibo.js batch-download data/示例账号甲/1000000001.json --limit 20
 node bin/weibo.js batch-download data/示例账号甲/1000000001.json --year 2026
 node bin/weibo.js batch-download data/示例账号甲/1000000001.json --year 2026 --month 8
+node bin/weibo.js batch-download data/示例账号甲/1000000001.json --audios-only
 ```
 
 `--year` 和 `--month` 都按北京时间判断帖子发布时间；`--month` 必须与 `--year` 一起使用，避免把不同年份的同名月份混在一次下载中。筛选发生在第一阶段 JSON 的稳定帖子字段上，命中的每条微博仍会在下载前重新请求详情并取得最新签名媒体地址。
 
 批量模式不会先生成一份 CDN 地址清单。它只使用第一阶段保存的稳定帖子 ID，然后严格按“解析一条→立即下载这一条→下一条”执行。微博视频 URL 含 `Expires`、`ssig` 等短时签名，同一帖子重新解析时 URL 可能变化；下载器在签名临近过期或 CDN 返回 401/402/403/404/410 时，会重新请求帖子详情、按稳定媒体标识找到同一文件并重试一次。
 
-默认同时下载顶层微博和被转发原帖的媒体，可用 `--no-retweet` 排除原帖。图片优先取接口的 `largest`，不会把 `large` 或缩略图误称为原图；GIF 保持 `.gif`，Live Photo 保存静态图和 `.mov`。视频选登录账号当前能看到的 `playback_list` 最高分辨率文件，通常是已经包含 AAC 音轨的完整 MP4，可直接保存而无需额外合并。这里的“最高”是接口当前提供的最高播放档，不承诺等于上传者原始母版，也不承诺存在独立无损音轨。
+默认同时下载顶层微博和被转发原帖的媒体，可用 `--no-retweet` 排除原帖。图片优先取接口的 `largest`，不会把 `large` 或缩略图误称为原图；GIF 保持 `.gif`，Live Photo 保存静态图和 `.mov`。视频选登录账号当前能看到的 `playback_list` 最高分辨率文件，通常是已经包含 AAC 音轨的完整 MP4，可直接保存而无需额外合并。微博音频从 `podcast_audio` 详情即时取得带短时签名的原始 MP3 流，按 `audioTitle` 命名；可用 `--audios-only` 只下载音频。这里的“最高”是接口当前提供的最高播放档，不承诺等于上传者原始母版，也不承诺存在独立无损音轨。
 
 文件写入：
 
 ```text
 downloads/{账号名称}/{北京时间 YYYY-MM-DD_HH-mm-ss}_{微博ID}/post_p1.jpg
 downloads/{账号名称}/{北京时间 YYYY-MM-DD_HH-mm-ss}_{微博ID}/post_v1.mp4
+downloads/{账号名称}/{北京时间 YYYY-MM-DD_HH-mm-ss}_{微博ID}/{音频标题}_{北京时间发布时间}_{发布人账号名称}.mp3
 downloads/{账号名称}/{北京时间 YYYY-MM-DD_HH-mm-ss}_{微博ID}/retweeted_{原帖ID}_p1.jpg
 downloads/{账号名称}/download-manifest.json
 ```
 
 帖子目录采用“发布时间 + 微博 ID”，例如 `2026-08-28_23-00-07_5000000000000001`。发布时间让文件夹按名称自然保持时间顺序，帖子 ID 则避免同一秒多帖、时间字段修正或重复执行造成冲突。正文不放进目录名，避免表情、换行、超长文字和后续编辑导致路径不稳定；接口缺少有效发布时间时使用 `unknown-time_{微博ID}`。
 
-下载先写同名 `.part`，中断后再次执行会尝试 HTTP Range 续传；完整文件已存在时默认跳过，`--force` 才重新下载。清单保存相对路径、媒体类型、尺寸、画质、字节数、SHA-256 和完成时间，不保存 Cookie 或临时 CDN URL。解析详情时携带登录 Cookie；拿到签名 URL 后，Cookie 不会转发给微博图片/视频 CDN。
+下载先写同名 `.part`，中断后再次执行会尝试 HTTP Range 续传；完整文件已存在时默认跳过，`--force` 才重新下载。音频文件使用“音频标题_北京时间发布时间_发布人账号名称.mp3”命名，标题缺失时使用 `audio`，并清洗路径非法字符。清单保存相对路径、媒体类型、音频标题、发布人、发布时间、尺寸、画质、字节数、SHA-256 和完成时间，不保存 Cookie 或临时 CDN URL。解析详情时携带登录 Cookie；拿到签名 URL 后，Cookie 不会转发给微博图片、视频或音频 CDN。
 
-抓取分为三阶段：先完整枚举高级搜索，再完整枚举旧时间线；按微博 ID 求并集去重；最后只对并集中确有截断的微博并发补全正文。三个阶段使用独立客户端，但共享登录会话和请求启动调度器。高级搜索与正文详情默认保持 300ms；账号资料报告超过 1200 条时，只把该账号的旧时间线客户端切换到 600ms，并在旧时间线每 40 页主动暂停 20 秒。旧时间线实际收集满 1200 条后，该账号后续旧时间线请求提高到 1200ms。快速模式如果遇到可重试的网关、风控或网络异常，也只调整发生异常的阶段客户端。可用 `--safe` 从一开始强制整个命令保守运行，用 `--delay <毫秒>` 调整快速间隔。`--no-full-text` 可完全跳过正文补全请求。
+抓取分为三阶段：先完整枚举高级搜索，再完整枚举旧时间线；按微博 ID 求并集去重；最后只对并集中确有截断的微博并发补全正文，并对列表结果缺少标题的微博音频补取稳定标题。三个阶段使用独立客户端，但共享登录会话和请求启动调度器。高级搜索与帖子详情默认保持 300ms；账号资料报告超过 1200 条时，只把该账号的旧时间线客户端切换到 600ms，并在旧时间线每 40 页主动暂停 20 秒。旧时间线实际收集满 1200 条后，该账号后续旧时间线请求提高到 1200ms。快速模式如果遇到可重试的网关、风控或网络异常，也只调整发生异常的阶段客户端。可用 `--safe` 从一开始强制整个命令保守运行，用 `--delay <毫秒>` 调整快速间隔。`--no-full-text` 只跳过长正文补全，不会关闭音频标题补全。
 
 #### 为什么默认合并两个接口
 
@@ -355,7 +359,8 @@ JSON 保存账号资料、抓取覆盖信息，以及按帖子 ID 索引的帖�
 - 发布时间、来源、地区、赞/评/转；
 - 置顶、转发及被转发原帖；
 - 统一、稳定的微博帖子跳转地址 `url`；
-- `mediaType`、`mediaCount`、`pictureCount`、`videoCount`，可识别单图、多图、视频和图视频混合帖。
+- `mediaType`、`mediaCount`、`pictureCount`、`videoCount`，可识别单图、多图、视频、微博音频和图视频混合帖。
+- `audioTitle`，单独保存微博音频标题；普通帖子为 `null`，不保存音频播放地址。
 - `listingSources`，标记帖子来自高级搜索、旧时间线或两者共同返回。
 
 第一阶段 JSON/CSV 不保存图片或视频 CDN 直链：这些地址可能带短期签名，之后打开会返回 402/403。稳定帖子 `url` 和 ID 是第二阶段重新解析媒体的入口。CSV 保留顶层帖子字段，并额外将一层 `retweetedStatus` 展平为 `retweeted_*` 列（包括原帖作者、正文、媒体统计和地址），便于在表格中搜索转发原帖内容；下载完成状态单独记录在 `downloads/{账号名称}/download-manifest.json`，不污染抓取数据。
@@ -439,10 +444,11 @@ CSV 中 `text`、`media_*` 和 `url` 始终表示顶层微博（也就是转发�
 | `isPinned` | boolean | 是否置顶 |
 | `isRetweet` | boolean | 是否为转发帖 |
 | `listingSources` | array | `profile-search`、`profile-feed`，或两者；表示该帖子由哪些列表源返回 |
-| `mediaType` | `none`、`pictures`、`video`、`mixed` 或 `link` | 媒体类型 |
+| `mediaType` | `none`、`pictures`、`video`、`audio`、`mixed` 或 `link` | 媒体类型 |
 | `mediaCount` | number | 媒体总数 |
 | `pictureCount` | number | 图片数量 |
 | `videoCount` | number | 视频数量 |
+| `audioTitle` | string 或 null | 微博音频标题；普通帖子为 `null`，不包含临时播放地址 |
 | `retweetedStatus` | object 或 null | 被转发原帖；结构递归使用同一组帖子键 |
 
 导出 JSON 不写入运行时使用的 `textHtml` 和 `textComplete` 字段，也不保存带短期签名的图片/视频 CDN 直链。若 `retweetedStatus` 继续包含转发原帖，其内部同样使用上述帖子字段，但不会再额外生成第二层 CSV 列。

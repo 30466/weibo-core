@@ -133,8 +133,8 @@ function logProfileFeedDeepDelay(prefix: string, fetched: number, delayMs: numbe
 }
 
 function logDetailProgress(prefix: string, count: number, total: number): void {
-  if (count === total) console.error(`${prefix}正文详情完成：处理 ${count} 条`)
-  else if (count % 50 === 0) console.error(`${prefix}正文详情进度：已处理 ${count} 条`)
+  if (count === total) console.error(`${prefix}帖子详情完成：处理 ${count} 条`)
+  else if (count % 50 === 0) console.error(`${prefix}帖子详情进度：已处理 ${count} 条`)
 }
 
 function formatDuration(startedAt: number): string {
@@ -238,14 +238,22 @@ async function cmdLogout(): Promise<void> {
   if (envCredential) console.warn('WEIBO_COOKIE 环境变量仍然存在；如需完全退出，请同时清除它。')
 }
 
-function mediaSelection(options: { imagesOnly?: boolean; videosOnly?: boolean }): Pick<
+function mediaSelection(options: {
+  imagesOnly?: boolean
+  videosOnly?: boolean
+  audiosOnly?: boolean
+}): Pick<
   DownloadPostOptions,
-  'downloadImages' | 'downloadVideos'
+  'downloadImages' | 'downloadVideos' | 'downloadAudios'
 > {
-  if (options.imagesOnly && options.videosOnly) throw new Error('--images-only 与 --videos-only 不能同时使用')
+  const selectedModes = [options.imagesOnly, options.videosOnly, options.audiosOnly].filter(Boolean).length
+  if (selectedModes > 1) {
+    throw new Error('--images-only、--videos-only 与 --audios-only 只能使用一个')
+  }
   return {
-    downloadImages: !options.videosOnly,
-    downloadVideos: !options.imagesOnly,
+    downloadImages: options.imagesOnly === true || selectedModes === 0,
+    downloadVideos: options.videosOnly === true || selectedModes === 0,
+    downloadAudios: options.audiosOnly === true || selectedModes === 0,
   }
 }
 
@@ -281,6 +289,7 @@ async function cmdMedia(
     screenName: resolved.screenName,
     createdAtRaw: resolved.createdAtRaw,
     unresolvedVideoCount: resolved.unresolvedVideoCount,
+    unresolvedAudioCount: resolved.unresolvedAudioCount,
     items: resolved.items.map(publicMediaItem),
   }
   if (options.json) {
@@ -294,6 +303,7 @@ async function cmdMedia(
     console.log(`  ${item.source}/${item.kind} #${item.index}：${size}，${item.quality}${formatCount}`)
   }
   if (safe.unresolvedVideoCount) console.warn(`  另有 ${safe.unresolvedVideoCount} 个视频未能解析`)
+  if (safe.unresolvedAudioCount) console.warn(`  另有 ${safe.unresolvedAudioCount} 个音频未能解析`)
 }
 
 async function cmdDownload(
@@ -302,6 +312,7 @@ async function cmdDownload(
     output?: string
     imagesOnly?: boolean
     videosOnly?: boolean
+    audiosOnly?: boolean
     retweet?: boolean
     force?: boolean
     delay?: string
@@ -325,6 +336,7 @@ async function cmdDownload(
     downloadedFiles: result.files.filter(file => !file.skipped).length,
     skippedFiles: result.files.filter(file => file.skipped).length,
     unresolvedVideoCount: result.unresolvedVideoCount,
+    unresolvedAudioCount: result.unresolvedAudioCount,
     files: result.files.map(file => ({
       path: file.path,
       bytes: file.bytes,
@@ -339,6 +351,7 @@ async function cmdDownload(
     console.log(`目录: ${safeResult.postDir}`)
     console.log(`清单: ${safeResult.manifestPath}`)
     if (safeResult.unresolvedVideoCount) console.warn(`仍有 ${safeResult.unresolvedVideoCount} 个视频未能解析`)
+    if (safeResult.unresolvedAudioCount) console.warn(`仍有 ${safeResult.unresolvedAudioCount} 个音频未能解析`)
   }
 }
 
@@ -348,6 +361,7 @@ async function cmdBatchDownload(
     output?: string
     imagesOnly?: boolean
     videosOnly?: boolean
+    audiosOnly?: boolean
     retweet?: boolean
     force?: boolean
     delay?: string
@@ -675,7 +689,7 @@ program.command('list')
   .option('--max-pages <N>', '最多抓取页数')
   .option('--delay <ms>', 'API 最小请求间隔（毫秒）')
   .option('--safe', '整个命令从头使用 600ms 保守节流，并每 40 页暂停 20 秒')
-  .option('--detail-concurrency <N>', '长微博正文详情并发数', '3')
+  .option('--detail-concurrency <N>', '长微博正文与音频标题详情并发数', '3')
   .option('--no-full-text', '不额外获取长微博全文')
   .option('--json', '输出 JSON')
   .action(cmdList)
@@ -688,7 +702,7 @@ program.command('export')
   .option('--max-pages <N>', '最多抓取页数（默认不限制）')
   .option('--delay <ms>', 'API 最小请求间隔（毫秒）')
   .option('--safe', '整个命令从头使用 600ms 保守节流，并每 40 页暂停 20 秒')
-  .option('--detail-concurrency <N>', '长微博正文详情并发数', '3')
+  .option('--detail-concurrency <N>', '长微博正文与音频标题详情并发数', '3')
   .option('--no-full-text', '不额外获取长微博全文')
   .option('--output <dir>', '输出根目录', 'data')
   .action(cmdExport)
@@ -702,13 +716,13 @@ program.command('sync')
   .option('--safe', '整个命令从头使用 600ms 保守节流，并每 40 页暂停 20 秒')
   .option('--concurrency <N>', '同时抓取的账号数', '3')
   .option('--feed-concurrency <N>', '超量阶段结束后，普通账号同时进入旧时间线的数量', '2')
-  .option('--detail-concurrency <N>', '每个账号的长微博正文详情并发数', '3')
+  .option('--detail-concurrency <N>', '每个账号的长微博正文与音频标题详情并发数', '3')
   .option('--no-full-text', '不额外获取长微博全文')
   .option('--output <dir>', '输出根目录', 'data')
   .action(cmdSync)
 
 program.command('media')
-  .description('即时解析一条微博可下载的原图、Live Photo 和视频画质（不显示临时 URL）')
+  .description('即时解析一条微博可下载的原图、Live Photo、视频和音频（不显示临时 URL）')
   .argument('<post>', '微博帖子 ID/BID 或帖子链接')
   .option('--no-retweet', '不解析被转发原帖的媒体')
   .option('--delay <ms>', 'API 最小请求间隔（毫秒）')
@@ -716,11 +730,12 @@ program.command('media')
   .action(cmdMedia)
 
 program.command('download')
-  .description('下载一条微博的原图、GIF、Live Photo 与最高可用画质视频')
+  .description('下载一条微博的原图、GIF、Live Photo、最高可用画质视频与音频')
   .argument('<post>', '微博帖子 ID/BID 或帖子链接')
   .option('--output <dir>', '下载根目录', 'downloads')
   .option('--images-only', '只下载图片、GIF 和 Live Photo 静态图')
   .option('--videos-only', '只下载视频和 Live Photo 动态文件')
+  .option('--audios-only', '只下载微博音频')
   .option('--no-retweet', '不下载被转发原帖的媒体')
   .option('--force', '重新下载并覆盖已完成的同名文件')
   .option('--delay <ms>', 'API 最小请求间隔（毫秒）')
@@ -736,6 +751,7 @@ program.command('batch-download')
   .option('--month <MM>', '与 --year 同用，只下载北京时间指定月份发布的微博（1-12）')
   .option('--images-only', '只下载图片、GIF 和 Live Photo 静态图')
   .option('--videos-only', '只下载视频和 Live Photo 动态文件')
+  .option('--audios-only', '只下载微博音频')
   .option('--no-retweet', '不下载被转发原帖的媒体')
   .option('--force', '重新下载并覆盖已完成的同名文件')
   .option('--delay <ms>', 'API 最小请求间隔（毫秒）')

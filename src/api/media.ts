@@ -3,7 +3,7 @@ import { WeiboApiClient } from './client.js'
 type RawObject = Record<string, any>
 
 export type WeiboMediaSource = 'post' | 'retweeted'
-export type ResolvedMediaKind = 'image' | 'gif' | 'live-photo-image' | 'live-photo-video' | 'video'
+export type ResolvedMediaKind = 'image' | 'gif' | 'live-photo-image' | 'live-photo-video' | 'video' | 'audio'
 
 export interface WeiboVideoFormat {
   url: string
@@ -33,6 +33,9 @@ export interface ResolvedMediaItem {
   bitrate: number | null
   mimeType: string
   quality: string
+  title: string | null
+  publisherName?: string | null
+  publishedAtRaw?: string | null
   expiresAt: string | null
   formats?: WeiboVideoFormat[]
 }
@@ -47,6 +50,7 @@ interface UnresolvedVideo {
 export interface ParsedStatusMedia {
   items: ResolvedMediaItem[]
   unresolvedVideos: UnresolvedVideo[]
+  unresolvedAudioCount: number
 }
 
 export interface ResolvedPostMedia {
@@ -56,6 +60,7 @@ export interface ResolvedPostMedia {
   createdAtRaw: string
   items: ResolvedMediaItem[]
   unresolvedVideoCount: number
+  unresolvedAudioCount: number
 }
 
 const VIDEO_FALLBACK_KEYS = [
@@ -246,6 +251,7 @@ function imageItems(
     bitrate: null,
     mimeType: isGif ? 'image/gif' : '',
     quality: 'largest',
+    title: null,
     expiresAt: expiresAtFromUrl(image.url),
   }]
 
@@ -268,6 +274,7 @@ function imageItems(
         bitrate: null,
         mimeType: 'video/quicktime',
         quality: 'live-photo',
+        title: null,
         expiresAt: expiresAtFromUrl(videoUrl),
       })
     }
@@ -304,6 +311,7 @@ function videoItem(
       bitrate: best.bitrate,
       mimeType: best.mimeType,
       quality: best.quality,
+      title: null,
       expiresAt: best.expiresAt,
       formats,
     },
@@ -313,6 +321,7 @@ function videoItem(
 function parseOneStatus(raw: RawObject, source: WeiboMediaSource): ParsedStatusMedia {
   const items: ResolvedMediaItem[] = []
   const unresolvedVideos: UnresolvedVideo[] = []
+  let unresolvedAudioCount = 0
   const sourcePostId = String(raw.id ?? raw.idstr ?? raw.mid ?? '')
   const mixed = Array.isArray(raw.mix_media_info?.items) ? raw.mix_media_info.items : []
 
@@ -341,7 +350,7 @@ function parseOneStatus(raw: RawObject, source: WeiboMediaSource): ParsedStatusM
         items.push(...imageItems(id, picInfo, source, sourcePostId, index))
       }
     })
-    return { items, unresolvedVideos }
+    return { items, unresolvedVideos, unresolvedAudioCount }
   }
 
   const picIds = Array.isArray(raw.pic_ids) ? raw.pic_ids.map(String) : []
@@ -389,6 +398,32 @@ function parseOneStatus(raw: RawObject, source: WeiboMediaSource): ParsedStatusM
     }
     if (result.unresolved) unresolvedVideos.push(result.unresolved)
   }
+  if (pageType === 'podcast_audio' || pageType === 'audio') {
+    const mediaInfo = pageInfo.media_info ?? {}
+    const audioUrl = absoluteUrl(mediaInfo.stream_url ?? mediaInfo.audio_url ?? pageInfo.stream_url)
+    if (audioUrl) {
+      items.push({
+        id: String(pageInfo.object_id ?? mediaInfo.media_id ?? sourcePostId),
+        source,
+        sourcePostId,
+        index: items.length + 1,
+        kind: 'audio',
+        url: audioUrl,
+        extension: extensionFromUrl(audioUrl, '.mp3'),
+        width: null,
+        height: null,
+        bitrate: numberOrNull(mediaInfo.bitrate),
+        mimeType: 'audio/mpeg',
+        quality: 'original',
+        title: String(pageInfo.card_info?.title ?? mediaInfo.title ?? '').trim() || null,
+        publisherName: String(raw.user?.screen_name ?? '').trim() || null,
+        publishedAtRaw: String(raw.created_at ?? '').trim() || null,
+        expiresAt: expiresAtFromUrl(audioUrl),
+      })
+    } else {
+      unresolvedAudioCount++
+    }
+  }
   if (!items.some(item => item.kind === 'video') && raw.video_info && typeof raw.video_info === 'object') {
     const result = videoItem(
       String(raw.video_info.object_id ?? raw.video_info.id ?? sourcePostId),
@@ -406,7 +441,7 @@ function parseOneStatus(raw: RawObject, source: WeiboMediaSource): ParsedStatusM
     }
     if (result.unresolved) unresolvedVideos.push(result.unresolved)
   }
-  return { items, unresolvedVideos }
+  return { items, unresolvedVideos, unresolvedAudioCount }
 }
 
 export function parseStatusMedia(raw: RawObject, includeRetweet = true): ParsedStatusMedia {
@@ -416,6 +451,7 @@ export function parseStatusMedia(raw: RawObject, includeRetweet = true): ParsedS
   return {
     items: [...primary.items, ...retweeted.items],
     unresolvedVideos: [...primary.unresolvedVideos, ...retweeted.unresolvedVideos],
+    unresolvedAudioCount: primary.unresolvedAudioCount + retweeted.unresolvedAudioCount,
   }
 }
 
@@ -461,6 +497,7 @@ async function resolveLegacyVideo(video: UnresolvedVideo, client: WeiboApiClient
     bitrate: best.bitrate,
     mimeType: best.mimeType,
     quality: best.quality,
+    title: null,
     expiresAt: best.expiresAt,
     formats,
   }
@@ -500,6 +537,7 @@ export async function resolvePostMedia(
     createdAtRaw: String(raw.created_at ?? ''),
     items: parsed.items,
     unresolvedVideoCount,
+    unresolvedAudioCount: parsed.unresolvedAudioCount,
   }
 }
 
