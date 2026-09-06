@@ -22,7 +22,15 @@ import {
 } from './auth.js'
 import { SessionManager } from './session.js'
 import { formatBeijingDateTime } from './time.js'
-import type { WeiboAccount } from './types.js'
+import { publicMediaItem, resolvePostMedia } from './api/media.js'
+import {
+  downloadCrawlResult,
+  downloadPostMedia,
+  postIdFromInput,
+  type DownloadPostOptions,
+  type DownloadProgress,
+} from './downloader.js'
+import type { CrawlResult, WeiboAccount } from './types.js'
 
 interface CommonOptions {
   name?: string
@@ -228,6 +236,161 @@ async function cmdLogout(): Promise<void> {
   const envCredential = process.env.WEIBO_COOKIE?.trim()
   console.log(existed ? `已删除本地凭证: ${CREDENTIAL_PATH}` : '没有已保存的本地凭证')
   if (envCredential) console.warn('WEIBO_COOKIE 环境变量仍然存在；如需完全退出，请同时清除它。')
+}
+
+function mediaSelection(options: { imagesOnly?: boolean; videosOnly?: boolean }): Pick<
+  DownloadPostOptions,
+  'downloadImages' | 'downloadVideos'
+> {
+  if (options.imagesOnly && options.videosOnly) throw new Error('--images-only 与 --videos-only 不能同时使用')
+  return {
+    downloadImages: !options.videosOnly,
+    downloadVideos: !options.imagesOnly,
+  }
+}
+
+function logDownloadProgress(progress: DownloadProgress): void {
+  if (progress.phase === 'resolving') {
+    console.error(`  解析微博 ${progress.postId} 的最新媒体地址...`)
+    return
+  }
+  if (progress.phase === 'refreshing') {
+    console.error('  媒体签名即将过期或已失效，正在重新解析...')
+    return
+  }
+  if (progress.phase === 'downloading') {
+    const resolution = progress.item?.height ? ` ${progress.item.height}p` : ''
+    console.error(`  下载 ${progress.item?.kind ?? '媒体'}${resolution}: ${progress.filePath ?? ''}`)
+    return
+  }
+  console.error(`  ${progress.phase === 'skipped' ? '已存在，跳过' : '完成'}: ${progress.filePath ?? ''}`)
+}
+
+async function cmdMedia(
+  post: string,
+  options: { retweet?: boolean; delay?: string; json?: boolean },
+): Promise<void> {
+  const postId = postIdFromInput(post)
+  const resolved = await resolvePostMedia(postId, {
+    client: makeClient(options.delay),
+    includeRetweet: options.retweet !== false,
+  })
+  const safe = {
+    postId: resolved.postId,
+    postUrl: resolved.postUrl,
+    screenName: resolved.screenName,
+    createdAtRaw: resolved.createdAtRaw,
+    unresolvedVideoCount: resolved.unresolvedVideoCount,
+    items: resolved.items.map(publicMediaItem),
+  }
+  if (options.json) {
+    console.log(JSON.stringify(safe, null, 2))
+    return
+  }
+  console.log(`${safe.screenName || '未知账号'}：${safe.items.length} 个可下载媒体`)
+  for (const item of safe.items) {
+    const size = item.width && item.height ? `${item.width}×${item.height}` : '尺寸未知'
+    const formatCount = item.formatCount ? `，${item.formatCount} 档视频画质` : ''
+    console.log(`  ${item.source}/${item.kind} #${item.index}：${size}，${item.quality}${formatCount}`)
+  }
+  if (safe.unresolvedVideoCount) console.warn(`  另有 ${safe.unresolvedVideoCount} 个视频未能解析`)
+}
+
+async function cmdDownload(
+  post: string,
+  options: {
+    output?: string
+    imagesOnly?: boolean
+    videosOnly?: boolean
+    retweet?: boolean
+    force?: boolean
+    delay?: string
+    json?: boolean
+  },
+): Promise<void> {
+  const result = await downloadPostMedia(postIdFromInput(post), {
+    client: makeClient(options.delay),
+    outputDir: options.output,
+    includeRetweet: options.retweet !== false,
+    force: options.force,
+    ...mediaSelection(options),
+    onProgress: options.json ? undefined : logDownloadProgress,
+  })
+  const safeResult = {
+    postId: result.postId,
+    postUrl: result.postUrl,
+    screenName: result.screenName,
+    postDir: result.postDir,
+    manifestPath: result.manifestPath,
+    downloadedFiles: result.files.filter(file => !file.skipped).length,
+    skippedFiles: result.files.filter(file => file.skipped).length,
+    unresolvedVideoCount: result.unresolvedVideoCount,
+    files: result.files.map(file => ({
+      path: file.path,
+      bytes: file.bytes,
+      sha256: file.sha256,
+      skipped: file.skipped,
+      media: publicMediaItem(file.item),
+    })),
+  }
+  if (options.json) console.log(JSON.stringify(safeResult, null, 2))
+  else {
+    console.log(`下载完成：新增 ${safeResult.downloadedFiles}，跳过 ${safeResult.skippedFiles}`)
+    console.log(`目录: ${safeResult.postDir}`)
+    console.log(`清单: ${safeResult.manifestPath}`)
+    if (safeResult.unresolvedVideoCount) console.warn(`仍有 ${safeResult.unresolvedVideoCount} 个视频未能解析`)
+  }
+}
+
+async function cmdBatchDownload(
+  file: string,
+  options: {
+    output?: string
+    imagesOnly?: boolean
+    videosOnly?: boolean
+    retweet?: boolean
+    force?: boolean
+    delay?: string
+    limit?: string
+    year?: string
+    month?: string
+    json?: boolean
+  },
+): Promise<void> {
+  const inputPath = path.resolve(file)
+  const crawl = JSON.parse(await fsp.readFile(inputPath, 'utf8')) as CrawlResult
+  if (!crawl.account?.screenName || !crawl.posts || typeof crawl.posts !== 'object') {
+    throw new Error('输入文件不是 weibo-core 导出的账号 JSON')
+  }
+  const year = positiveInteger(options.year, '--year')
+  const month = options.month === undefined ? undefined : positiveInteger(options.month, '--month')
+  if (month !== undefined && month > 12) throw new Error('--month 必须是 1 到 12')
+  if (month !== undefined && year === undefined) throw new Error('--month 必须和 --year 一起使用')
+  const result = await downloadCrawlResult(crawl, {
+    client: makeClient(options.delay),
+    outputDir: options.output,
+    includeRetweet: options.retweet !== false,
+    force: options.force,
+    limit: positiveInteger(options.limit, '--limit'),
+    year,
+    month,
+    ...mediaSelection(options),
+    onProgress: options.json ? undefined : logDownloadProgress,
+    onPostComplete: options.json ? undefined : (completed, total, downloaded) => {
+      console.error(`  [${completed}/${total}] 微博 ${downloaded.postId} 完成，共 ${downloaded.files.length} 个文件`)
+    },
+    onPostError: options.json ? undefined : (completed, total, post, error) => {
+      console.error(`  [${completed}/${total}] 微博 ${post.id} 失败：${error.message}`)
+    },
+  })
+  if (options.json) console.log(JSON.stringify(result, null, 2))
+  else {
+    console.log(
+      `批量下载完成：帖子成功 ${result.completedPosts}/${result.selectedPosts}，` +
+      `新增文件 ${result.downloadedFiles}，跳过 ${result.skippedFiles}，失败帖子 ${result.failedPosts}`,
+    )
+  }
+  if (result.failedPosts) process.exitCode = 1
 }
 
 async function cmdList(uidArg: string | undefined, options: CommonOptions & { json?: boolean }): Promise<void> {
@@ -476,7 +639,7 @@ async function cmdSync(
 }
 
 const program = new Command()
-program.name('weibo').description('微博账号帖子列表抓取与导出工具（API 优先）').version('0.1.0')
+program.name('weibo').description('微博帖子抓取、导出与媒体下载工具（API 优先）').version('0.2.0')
 
 program.command('login')
   .description('使用纯 HTTP 二维码登录微博（默认方式，不启动浏览器）')
@@ -543,6 +706,41 @@ program.command('sync')
   .option('--no-full-text', '不额外获取长微博全文')
   .option('--output <dir>', '输出根目录', 'data')
   .action(cmdSync)
+
+program.command('media')
+  .description('即时解析一条微博可下载的原图、Live Photo 和视频画质（不显示临时 URL）')
+  .argument('<post>', '微博帖子 ID/BID 或帖子链接')
+  .option('--no-retweet', '不解析被转发原帖的媒体')
+  .option('--delay <ms>', 'API 最小请求间隔（毫秒）')
+  .option('--json', '输出不含临时 CDN URL 的 JSON')
+  .action(cmdMedia)
+
+program.command('download')
+  .description('下载一条微博的原图、GIF、Live Photo 与最高可用画质视频')
+  .argument('<post>', '微博帖子 ID/BID 或帖子链接')
+  .option('--output <dir>', '下载根目录', 'downloads')
+  .option('--images-only', '只下载图片、GIF 和 Live Photo 静态图')
+  .option('--videos-only', '只下载视频和 Live Photo 动态文件')
+  .option('--no-retweet', '不下载被转发原帖的媒体')
+  .option('--force', '重新下载并覆盖已完成的同名文件')
+  .option('--delay <ms>', 'API 最小请求间隔（毫秒）')
+  .option('--json', '只输出结果 JSON')
+  .action(cmdDownload)
+
+program.command('batch-download')
+  .description('从第一阶段导出的账号 JSON 逐条即时解析并下载媒体')
+  .argument('<file>', 'weibo-core 导出的账号 JSON 文件')
+  .option('--output <dir>', '下载根目录', 'downloads')
+  .option('--limit <N>', '最多处理多少条含媒体的微博')
+  .option('--year <YYYY>', '只下载北京时间指定年份发布的微博')
+  .option('--month <MM>', '与 --year 同用，只下载北京时间指定月份发布的微博（1-12）')
+  .option('--images-only', '只下载图片、GIF 和 Live Photo 静态图')
+  .option('--videos-only', '只下载视频和 Live Photo 动态文件')
+  .option('--no-retweet', '不下载被转发原帖的媒体')
+  .option('--force', '重新下载并覆盖已完成的同名文件')
+  .option('--delay <ms>', 'API 最小请求间隔（毫秒）')
+  .option('--json', '只输出结果 JSON')
+  .action(cmdBatchDownload)
 
 program.parseAsync(process.argv).catch(error => {
   console.error(`错误: ${(error as Error).message}`)

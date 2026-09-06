@@ -319,6 +319,101 @@ export class WeiboApiClient {
     throw new Error(`${lastError?.message ?? '微博 API 请求失败'} ${suffix}`)
   }
 
+  private async requestRaw<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    params: Record<string, string | number> = {},
+    data?: string,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<T> {
+    let lastError: Error | null = null
+    this.prepareRequest(path)
+
+    for (let attempt = 0; attempt < this.retries; attempt++) {
+      await this.throttle(path)
+      const cookie = await this.session.getCookie()
+      let retryStatus: number | undefined
+      try {
+        const http = path.startsWith('/ajax/') || path.startsWith('/tv/')
+          ? this.desktopHttp
+          : this.mobileHttp
+        const response = await http.request<T>({
+          method,
+          url: path,
+          params,
+          data,
+          headers: {
+            Cookie: cookie,
+            'X-XSRF-TOKEN': cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/)?.[1] ?? '',
+            ...extraHeaders,
+          },
+        })
+        const body = response.data as T & { ok?: number; msg?: string; error?: string }
+
+        if (response.status === 200 && body && typeof body === 'object') {
+          if (body.ok === -100) {
+            throw new WeiboApiError(
+              '微博要求登录后才能读取媒体详情；请运行 node bin/weibo.js login 扫码登录',
+              response.status,
+              false,
+            )
+          }
+          if (body.ok === 0 || body.error) {
+            throw new WeiboApiError(
+              `微博 API 请求失败 [${path}]: ${body.msg ?? body.error ?? '未知错误'}`,
+              response.status,
+              false,
+            )
+          }
+          return body
+        }
+
+        const status = response.status
+        const isHtml = typeof body === 'string' && /<html|<!doctype/i.test(body)
+        const retryable = isHtml || [403, 414, 418, 429, 432].includes(status) || status >= 500
+        lastError = new WeiboApiError(`微博 API 请求失败 [${path}]: HTTP ${status}`, status, retryable)
+        if (!retryable) throw lastError
+        retryStatus = status
+      } catch (error) {
+        if (error instanceof WeiboApiError && !error.retryable) throw error
+        lastError = error instanceof Error ? error : new Error(String(error))
+        if (error instanceof WeiboApiError) retryStatus = error.status
+      }
+
+      if (attempt < this.retries - 1) {
+        const switchedToSafeMode = this.adaptAfterFailure(retryStatus, attempt)
+        const delayMs = retryDelayMs(retryStatus, attempt)
+        this.extendCooldown(delayMs)
+        this.onRetry?.({
+          path,
+          status: retryStatus,
+          delayMs,
+          requestDelayMs: this.requestDelayMs,
+          switchedToSafeMode,
+          nextAttempt: attempt + 2,
+          maxAttempts: this.retries,
+        })
+      }
+    }
+
+    throw new Error(`${lastError?.message ?? '微博 API 请求失败'} 本地登录凭证可能已过期。`)
+  }
+
+  /** Return endpoints such as statuses/show whose successful body is not wrapped in data. */
+  async getRaw<T>(path: string, params: Record<string, string | number> = {}): Promise<T> {
+    return this.requestRaw<T>('GET', path, params)
+  }
+
+  /** POST a form body and return the unwrapped JSON response. */
+  async postRaw<T>(
+    path: string,
+    data: string,
+    params: Record<string, string | number> = {},
+    headers: Record<string, string> = {},
+  ): Promise<T> {
+    return this.requestRaw<T>('POST', path, params, data, headers)
+  }
+
   async getHtml(url: string, params: Record<string, string | number> = {}): Promise<string> {
     let lastError: Error | null = null
     for (let attempt = 0; attempt < this.retries; attempt++) {

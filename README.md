@@ -1,6 +1,6 @@
 # weibo-core
 
-微博账号帖子列表抓取与导出 CLI。支持按数字 UID、账号名称或 TXT 批量输入，持续翻页抓取账号帖子并导出 JSON + CSV。本项目只维护帖子索引与文本元数据，不下载图片、音频或视频。
+微博账号帖子抓取、导出与媒体下载 CLI。第一阶段支持按数字 UID、账号名称或 TXT 批量输入，持续翻页导出稳定的 JSON + CSV；第二阶段可按帖子即时解析并下载原图、GIF、Live Photo 和最高可用画质视频。
 
 ## 许可与使用声明
 
@@ -21,15 +21,43 @@
 - 高级搜索：`weibo.com/ajax/statuses/searchProfile?uid=...&page=...`，启用原创、转发、纯文字、图片、视频、音乐六种类型；
 - 个人页时间线：`weibo.com/ajax/statuses/mymblog?uid=...&page=...`；
 - 账号帖子（默认）：依次枚举上述两个独立数据源，按微博 ID 求并集去重；
-- 长微博正文：仅对 `isLongText` 帖子调用 `weibo.com/ajax/statuses/longtext`。
+- 长微博正文：仅对 `isLongText` 帖子调用 `weibo.com/ajax/statuses/longtext`；
+- 媒体详情：下载前即时调用 `weibo.com/ajax/statuses/show?id=...`，图片取 `largest`，视频从 `playback_list` 选最高可用画质；旧视频结构再使用 `weibo.com/tv/api/component` 回退。
 
 ### 调研来源与实现边界
 
 - [dataabc/weibo-crawler](https://github.com/dataabc/weibo-crawler)：用于了解按单个/多个 UID 或 TXT 配置抓取、原创与转发建模、增量更新及 JSON/CSV 导出的成熟产品形态。该项目是基于移动版微博的 Python 爬虫，与本项目使用的桌面端 `weibo.com/ajax` 接口和 TypeScript 代码结构不同。其仓库当前未提供明确的 `LICENSE` 文件，因此本项目没有复制或改写其源代码，只参考功能需求和公开输出设计。
 - [NanmiCoder/MediaCrawler 的微博客户端](https://github.com/NanmiCoder/MediaCrawler/blob/main/media_platform/weibo/client.py)：用于验证“浏览器只负责取得/刷新 Cookie，后续内容抓取由 HTTP 客户端调用 API”这一架构可行，也参考了请求重试、Cookie 更新和移动端容器接口的处理思路。MediaCrawler 依赖 Playwright 页面并使用 `m.weibo.cn`，本项目则默认通过微博 Passport 的纯 HTTP 二维码取得 Cookie，帖子抓取使用 `weibo.com/ajax`，仅把 Agent 已有浏览器作为登录备用方案。MediaCrawler 采用 `NON-COMMERCIAL LEARNING LICENSE 1.1`；本项目没有复制或改写其代码。
 - [jackwener/weibo-cli 的二维码登录实现](https://github.com/jackwener/weibo-cli/blob/main/weibo_cli/auth.py)：本项目的 Passport 二维码认证流程由其 Python 实现改写为 TypeScript，包括取得 `X-CSRF-TOKEN`、申请二维码、终端展示、轮询扫码状态和跟随 SSO 跨域地址换取 Cookie。上游在 `pyproject.toml` 和 README 中声明 Apache-2.0；本项目保留来源说明，并在 [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt) 附上许可证文本。TypeScript 版本另外实现了 `tough-cookie` CookieJar、二维码 PNG、激活延迟、凭证校验与项目内 `0600` 存储，不使用其 Python 包，也不读取本机浏览器 Cookie。
+- [yt-dlp 的 Weibo extractor](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/weibo.py)：用于核对公开微博视频详情入口、`playback_list` 画质信息和旧版 `tv/api/component` 回退行为。yt-dlp 使用 Unlicense；本项目的下载器为独立 TypeScript 实现，并保留来源及 [`LICENSES/Unlicense.txt`](LICENSES/Unlicense.txt)。
+- `gbandszxc/weibo-image-downloader` 与 `JeffreyCA/weibo-video-downloader`：仅用于对照公开可观察的图片/视频字段及产品行为。两者调研时没有仓库级许可证，因此本项目没有复制、翻译或改写其代码。
 
-“没有作为运行时依赖”不等于“没有许可证义务”：将 Python 代码翻译或改写为 TypeScript 仍可能构成改编，因此上述二维码登录明确按改编处理并保留 Apache-2.0 来源；其余两个项目仅作为调研材料，不包含其代码。更完整的第三方声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+“公开可见”或“仅供学习”不等于自动取得复制、修改和再分发权：没有许可证的仓库只能作为行为和接口调研材料，不能直接照搬代码。将代码翻译为另一种语言也可能构成改编。因此二维码登录按 Apache-2.0 改编处理，yt-dlp 按 Unlicense 记录来源，其余无明确许可的项目不包含其代码。更完整的第三方声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+
+#### 调研结论与实现映射
+
+| 调研对象 | 公开信息/实测结论 | 本项目采用的部分 | 许可证处理 |
+| --- | --- | --- | --- |
+| [`yt-dlp` Weibo extractor](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/weibo.py) | 可验证微博详情接口、视频播放信息和旧版组件接口的关系；适合做字段和回退路径的交叉核对 | `src/api/media.ts` 解析 `playback_list`，按质量/像素/码率排序，并在缺少播放列表时回退 `tv/api/component` | yt-dlp 使用 [The Unlicense](https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE)；本项目独立重写并附许可证文本 |
+| [`gbandszxc/weibo-image-downloader`](https://github.com/gbandszxc/weibo-image-downloader) | 公开说明覆盖微博原图、GIF、Live Photo 和混合媒体；后续版本强调从 `pic_ids/pic_infos` 识别 Live Photo | 交叉核对 `pic_infos`、`largest`、GIF 和 Live Photo 的媒体拆分 | 调研时未发现仓库级 LICENSE；只参考行为，不复制或翻译代码 |
+| [`dataabc/weibo-crawler`](https://github.com/dataabc/weibo-crawler) | 成熟的账号/TXT 输入、帖子导出和原创/转发嵌套结构 | 参考输入、导出和转发建模的功能边界 | 调研时未发现明确 LICENSE；只参考功能，不复制代码 |
+| [`NanmiCoder/MediaCrawler`](https://github.com/NanmiCoder/MediaCrawler/blob/main/media_platform/weibo/client.py) | “浏览器取得 Cookie，HTTP 客户端调用接口”的架构可行；其微博客户端使用移动端容器接口 | 保持 Cookie 与 API 客户端分离，但本项目默认 Passport 纯 HTTP 二维码登录，帖子接口使用 `weibo.com/ajax` | 参考文件声明 `NON-COMMERCIAL LEARNING LICENSE 1.1`；本项目没有复制或改写其代码 |
+| [`JeffreyCA/weibo-video-downloader`](https://github.com/JeffreyCA/weibo-video-downloader) | 用于对照微博视频链接提取和浏览器端下载行为 | 只做结果行为对照 | 调研时未发现仓库级 LICENSE；不复制代码 |
+
+这些项目的作用不同：yt-dlp 提供可审计的微博解析线索，其他微博项目帮助交叉核对字段、登录方式和功能边界。它们不是运行时依赖；除上文明确说明按 Apache-2.0 改写的二维码登录流程外，下载器是独立的 TypeScript 实现。
+
+#### 微博媒体接口实测记录
+
+以下结论来自本地有效登录态的真实请求，不能视为微博官方永久承诺：
+
+1. `/ajax/statuses/show?id=...` 登录后返回原始微博对象；未登录时会返回 `ok=-100`。因此媒体详情解析必须沿用登录 Cookie。
+2. 视频 `playback_list` 返回多个完整播放档。实测同一条视频可以同时出现 1080p、720p、540p，播放档的 MP4 已带 AAC 音轨，下载器可直接保存，不需要另取音轨再合并。
+3. 视频 CDN URL 含 `Expires`、`ssig`、`KID` 等签名参数，通常只有短时有效。同一帖子间隔几秒重新解析，URL 和签名会变化；去掉签名会得到 403。下载器因此不把这些 URL 预先写入第一阶段 JSON，也不把它们写入下载清单。
+4. 图片详情的 `largest` 不应简单等同于 `original` 或 `large`。实测样本中 `largest` 为 2028×1521，而 `original` 为 1440×1080；下载器优先使用 `largest`，并仅在接口给出较小 URL 时做尺寸路径转换。
+5. 旧数据结构可能没有 `playback_list`，但 `tv/api/component` 的 `Component_Play_Playinfo.urls` 可以返回带“高清 1080P/720P/标清 480P”标签的播放地址。解析器只在主详情未拿到视频时使用这个回退。
+6. 详情请求需要 Cookie；取得签名地址后，CDN 下载只发送 User-Agent 和 `Referer: https://weibo.com/`，不把账号 Cookie 转发给图片/视频 CDN。下载响应支持 Range 时可以续传。
+
+因此第二阶段的稳定边界是：第一阶段只保存帖子 ID、发布时间、帖子网页 URL 和媒体统计；第二阶段按年份/月筛选这些稳定字段，再逐条请求详情、下载媒体并记录本地校验值。年份/月筛选是帖子选择，不是 CDN 地址缓存。
 
 ### Cookie 与登录边界
 
@@ -131,6 +159,50 @@ data/{账号名称}/{uid}.csv
 node bin/weibo.js export 1000000001 --limit 20
 node bin/weibo.js export 1000000001 --max-pages 2
 ```
+
+### 即时解析与下载媒体
+
+先检查一条微博能解析出哪些媒体；输出只含类型、尺寸、画质和签名过期时间，不显示 CDN URL：
+
+```bash
+node bin/weibo.js media https://weibo.com/1000000001/AbCdEf --json
+```
+
+下载单条微博：
+
+```bash
+node bin/weibo.js download https://weibo.com/1000000001/AbCdEf
+node bin/weibo.js download 5000000000000001 --images-only
+node bin/weibo.js download AbCdEf --videos-only --no-retweet
+```
+
+从第一阶段导出的 JSON 批量下载：
+
+```bash
+node bin/weibo.js batch-download data/示例账号甲/1000000001.json
+node bin/weibo.js batch-download data/示例账号甲/1000000001.json --limit 20
+node bin/weibo.js batch-download data/示例账号甲/1000000001.json --year 2026
+node bin/weibo.js batch-download data/示例账号甲/1000000001.json --year 2026 --month 8
+```
+
+`--year` 和 `--month` 都按北京时间判断帖子发布时间；`--month` 必须与 `--year` 一起使用，避免把不同年份的同名月份混在一次下载中。筛选发生在第一阶段 JSON 的稳定帖子字段上，命中的每条微博仍会在下载前重新请求详情并取得最新签名媒体地址。
+
+批量模式不会先生成一份 CDN 地址清单。它只使用第一阶段保存的稳定帖子 ID，然后严格按“解析一条→立即下载这一条→下一条”执行。微博视频 URL 含 `Expires`、`ssig` 等短时签名，同一帖子重新解析时 URL 可能变化；下载器在签名临近过期或 CDN 返回 401/402/403/404/410 时，会重新请求帖子详情、按稳定媒体标识找到同一文件并重试一次。
+
+默认同时下载顶层微博和被转发原帖的媒体，可用 `--no-retweet` 排除原帖。图片优先取接口的 `largest`，不会把 `large` 或缩略图误称为原图；GIF 保持 `.gif`，Live Photo 保存静态图和 `.mov`。视频选登录账号当前能看到的 `playback_list` 最高分辨率文件，通常是已经包含 AAC 音轨的完整 MP4，可直接保存而无需额外合并。这里的“最高”是接口当前提供的最高播放档，不承诺等于上传者原始母版，也不承诺存在独立无损音轨。
+
+文件写入：
+
+```text
+downloads/{账号名称}/{北京时间 YYYY-MM-DD_HH-mm-ss}_{微博ID}/post_p1.jpg
+downloads/{账号名称}/{北京时间 YYYY-MM-DD_HH-mm-ss}_{微博ID}/post_v1.mp4
+downloads/{账号名称}/{北京时间 YYYY-MM-DD_HH-mm-ss}_{微博ID}/retweeted_{原帖ID}_p1.jpg
+downloads/{账号名称}/download-manifest.json
+```
+
+帖子目录采用“发布时间 + 微博 ID”，例如 `2026-08-28_23-00-07_5000000000000001`。发布时间让文件夹按名称自然保持时间顺序，帖子 ID 则避免同一秒多帖、时间字段修正或重复执行造成冲突。正文不放进目录名，避免表情、换行、超长文字和后续编辑导致路径不稳定；接口缺少有效发布时间时使用 `unknown-time_{微博ID}`。
+
+下载先写同名 `.part`，中断后再次执行会尝试 HTTP Range 续传；完整文件已存在时默认跳过，`--force` 才重新下载。清单保存相对路径、媒体类型、尺寸、画质、字节数、SHA-256 和完成时间，不保存 Cookie 或临时 CDN URL。解析详情时携带登录 Cookie；拿到签名 URL 后，Cookie 不会转发给微博图片/视频 CDN。
 
 抓取分为三阶段：先完整枚举高级搜索，再完整枚举旧时间线；按微博 ID 求并集去重；最后只对并集中确有截断的微博并发补全正文。三个阶段使用独立客户端，但共享登录会话和请求启动调度器。高级搜索与正文详情默认保持 300ms；账号资料报告超过 1200 条时，只把该账号的旧时间线客户端切换到 600ms，并在旧时间线每 40 页主动暂停 20 秒。旧时间线实际收集满 1200 条后，该账号后续旧时间线请求提高到 1200ms。快速模式如果遇到可重试的网关、风控或网络异常，也只调整发生异常的阶段客户端。可用 `--safe` 从一开始强制整个命令保守运行，用 `--delay <毫秒>` 调整快速间隔。`--no-full-text` 可完全跳过正文补全请求。
 
@@ -286,7 +358,7 @@ JSON 保存账号资料、抓取覆盖信息，以及按帖子 ID 索引的帖�
 - `mediaType`、`mediaCount`、`pictureCount`、`videoCount`，可识别单图、多图、视频和图视频混合帖。
 - `listingSources`，标记帖子来自高级搜索、旧时间线或两者共同返回。
 
-不保存图片或视频 CDN 直链：这些地址带短期签名，之后打开可能返回 402/403。需要查看图片、视频或混合媒体时统一打开帖子 `url`。CSV 保留顶层帖子字段，并额外将一层 `retweetedStatus` 展平为 `retweeted_*` 列（包括原帖作者、正文、媒体统计和地址），便于在表格中搜索转发原帖内容；媒体下载不属于本项目范围。
+第一阶段 JSON/CSV 不保存图片或视频 CDN 直链：这些地址可能带短期签名，之后打开会返回 402/403。稳定帖子 `url` 和 ID 是第二阶段重新解析媒体的入口。CSV 保留顶层帖子字段，并额外将一层 `retweetedStatus` 展平为 `retweeted_*` 列（包括原帖作者、正文、媒体统计和地址），便于在表格中搜索转发原帖内容；下载完成状态单独记录在 `downloads/{账号名称}/download-manifest.json`，不污染抓取数据。
 
 时间采用统一契约：微博接口原始时间必须带明确时区，`createdAt` 和 `updatedAt` 保存为 UTC ISO 8601 绝对时刻；CLI 展示固定转换为 `Asia/Shanghai`。高级搜索的结束日期也按北京时间的次日零点计算，不依赖运行爬虫的电脑时区。下游合并程序应原样保留这些绝对时刻，只按时间排序。
 
@@ -409,6 +481,6 @@ npm test
 npm run test:time
 ```
 
-公开的 [`test/core.example.test.mjs`](test/core.example.test.mjs) 是可直接执行的回归测试案例，只使用虚构账号、UID、帖子和接口响应。测试覆盖 TXT 混合输入、名称候选解析、HTML 正文、帖子/媒体字段、CSV 转义、跨页去重、双接口顺序枚举、并集来源标记以及共同长微博只补全一次。[`test/time.test.mjs`](test/time.test.mjs) 覆盖带时区时间规范化、北京时间显示和高级搜索次日零点；`test:time` 会在三个不同的进程时区中重复运行。
+公开的 [`test/core.example.test.mjs`](test/core.example.test.mjs) 是可直接执行的抓取回归测试案例，只使用虚构账号、UID、帖子和接口响应。[`test/media.test.mjs`](test/media.test.mjs) 覆盖原图优先、视频画质排序、GIF、Live Photo、混合/转发媒体、URL 脱敏、断点续传、原子落盘和下载清单。[`test/time.test.mjs`](test/time.test.mjs) 覆盖带时区时间规范化、北京时间显示和高级搜索次日零点；`test:time` 会在三个不同的进程时区中重复运行。
 
 维护者可以在本地 `test/local/` 保存包含真实调研标识的测试副本；该目录已被 `.gitignore` 排除，`npm test` 也不会扫描子目录，因此不会进入源码分发或自动测试。真实联网对照输出仍保存在同样被忽略的 `test-output/` 和 `data/` 中。

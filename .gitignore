@@ -12,6 +12,7 @@
 
 # Crawl results and local test artifacts
 /data/
+/downloads/
 /test-output/
 /test/local/
 /*.txt

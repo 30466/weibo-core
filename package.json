@@ -1,8 +1,8 @@
 {
   "name": "weibo-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "API-first Weibo account post crawler CLI",
+  "description": "API-first Weibo post crawler, exporter, and media downloader CLI",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "./dist/index.js",
