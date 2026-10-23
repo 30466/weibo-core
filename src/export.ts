@@ -1,5 +1,6 @@
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import { reserveSnapshotPaths } from './snapshot.js'
 import { fetchAllPosts, getAccount, type FetchPostsOptions } from './api/posts.js'
 import { SAFE_ACCOUNT_POST_THRESHOLD, WeiboApiClient } from './api/client.js'
 import type { CrawlResult, ExportedWeiboPost, WeiboAccount, WeiboPost } from './types.js'
@@ -134,9 +135,7 @@ export async function exportAccount(uid: string, options: ExportAccountOptions =
 
   const root = path.resolve(options.outputDir ?? 'data')
   const accountDir = path.join(root, sanitizePathSegment(account.screenName))
-  const jsonPath = path.join(accountDir, `${uid}.json`)
-  const csvPath = path.join(accountDir, `${uid}.csv`)
-  await fsp.mkdir(accountDir, { recursive: true })
+  const { jsonPath, csvPath } = await reserveSnapshotPaths(accountDir, uid, result.updatedAt)
   await fsp.writeFile(jsonPath, JSON.stringify(result, null, 2), 'utf8')
   await fsp.writeFile(csvPath, postsToCsv(posts), 'utf8')
   return { result, jsonPath, csvPath }

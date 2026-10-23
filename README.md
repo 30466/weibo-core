@@ -150,9 +150,11 @@ node bin/weibo.js export --name 示例账号甲
 结果写入：
 
 ```text
-data/{账号名称}/{uid}.json
-data/{账号名称}/{uid}.csv
+data/{账号名称}/{uid}_{保存时间}.json
+data/{账号名称}/{uid}_{保存时间}.csv
 ```
+
+保存时间是本次抓取结束后写入文件的北京时间，格式为 `YYYYMMDD_HHmmss_SSS`（毫秒）。同一批 JSON/CSV 使用相同时间；重名时追加序号，每次新增快照并保留历史文件。
 
 调试或小范围验证可限制数量或页数：
 
