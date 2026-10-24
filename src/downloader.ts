@@ -153,25 +153,27 @@ function filenameFor(
   item: ResolvedMediaItem,
   fallbackPublishedAt: string | null | undefined,
   fallbackPublisher: string,
+  multipleVideos = false,
 ): string {
   const prefix = item.source === 'post'
     ? 'post'
     : `retweeted_${sanitizePathSegment(item.sourcePostId)}`
   const extension = /^\.[a-zA-Z0-9]{2,5}$/.test(item.extension) ? item.extension.toLowerCase() : '.bin'
-  if (item.kind === 'audio') {
-    const title = truncateUtf8(sanitizePathSegment(item.title || 'audio'), 120)
+  if (item.kind === 'audio' || item.kind === 'video') {
+    const title = truncateUtf8(sanitizePathSegment(item.title || item.kind), 120)
     const timestamp = beijingTimestamp(item.publishedAtRaw ?? fallbackPublishedAt) ?? 'unknown-time'
     const publisher = truncateUtf8(
       sanitizePathSegment(item.publisherName || fallbackPublisher || 'unknown'),
       60,
     )
-    return `${title}_${timestamp}_${publisher}${extension}`
+    const suffix = item.kind === 'video' && multipleVideos
+      ? `_${item.source === 'retweeted' ? `${prefix}_` : ''}v${item.index}`
+      : ''
+    return `${title}_${timestamp}_${publisher}${suffix}${extension}`
   }
-  const suffix = item.kind === 'video'
-    ? `v${item.index}`
-    : item.kind.startsWith('live-photo')
-      ? `lp${item.index}`
-      : `p${item.index}`
+  const suffix = item.kind.startsWith('live-photo')
+    ? `lp${item.index}`
+    : `p${item.index}`
   return `${prefix}_${suffix}${extension}`
 }
 
@@ -326,6 +328,7 @@ export async function downloadPostMedia(
   await fsp.mkdir(postDir, { recursive: true })
   const manifest = await loadManifest(manifestPath, screenName)
   const files: DownloadedMediaFile[] = []
+  const multipleVideos = resolved.items.filter(item => item.kind === 'video').length > 1
 
   for (const original of resolved.items.filter(item => itemSelected(item, options))) {
     let item = original
@@ -335,7 +338,7 @@ export async function downloadPostMedia(
     }
     const destination = path.join(
       postDir,
-      filenameFor(item, options.createdAt ?? resolved.createdAtRaw, resolved.screenName),
+      filenameFor(item, options.createdAt ?? resolved.createdAtRaw, resolved.screenName, multipleVideos),
     )
     options.onProgress?.({ phase: 'downloading', postId: resolved.postId, item, filePath: destination })
     let downloaded: Awaited<ReturnType<typeof downloadUrlToFile>>

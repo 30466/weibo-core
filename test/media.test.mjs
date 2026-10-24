@@ -272,6 +272,95 @@ test('post downloader refreshes a rejected signed URL and retries the same media
   assert.deepEqual(await readFile(result.files[0].path), payload)
 })
 
+test('video filenames use post text with safe fallbacks and source publication metadata', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'weibo-video-name-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const payload = Buffer.from('video-body')
+  const mediaUrl = `data:video/mp4;base64,${payload.toString('base64')}`
+  const page = { object_type: 'video', object_id: 'video-1', media_info: { stream_url: mediaUrl } }
+  const source = {
+    created_at: '2026-07-15T07:37:05.000Z',
+    user: { id: '8', screen_name: '视频/账号' },
+    page_info: page,
+  }
+  const cases = [
+    { text: '<p>夏天 &amp; 音乐/现场</p>', expected: '夏天 & 音乐_现场' },
+    { text_raw: '真实正文', text: '<p>展示正文</p>', expected: '真实正文' },
+    { expected: 'video' },
+    { text_raw: ' \n\t ', expected: 'video' },
+    { text: '<p> </p>', expected: 'video' },
+    { text_raw: '中'.repeat(100), expected: '中'.repeat(40) },
+  ]
+  for (const [index, { expected, ...body }] of cases.entries()) {
+    const result = await downloadPostMedia(`video-${index}`, {
+      outputDir: root,
+      client: { async getRaw() { return { ...source, ...body, id: `video-${index}` } } },
+    })
+    assert.equal(path.basename(result.files[0].path), `${expected}_2026-07-15_15-37-05_视频_账号.mp4`)
+    assert.deepEqual(await readFile(result.files[0].path), payload)
+  }
+
+  // Legacy video resolution must retain the original post's text, time and author.
+  const retweeted = await downloadPostMedia('repost', {
+    outputDir: root,
+    client: {
+      async getRaw() {
+        return {
+          id: 'repost', text_raw: '转发评论', created_at: '2026-10-01T00:00:00Z',
+          user: { id: '9', screen_name: '转发人' },
+          retweeted_status: {
+            ...source, id: 'original', text_raw: '原帖正文',
+            page_info: { object_type: 'video', object_id: 'legacy-video' },
+          },
+        }
+      },
+      async postRaw() {
+        return { data: { Component_Play_Playinfo: { urls: { '1080p': mediaUrl } } } }
+      },
+    },
+  })
+  assert.equal(path.basename(retweeted.files[0].path), '原帖正文_2026-07-15_15-37-05_视频_账号.mp4')
+})
+
+test('multiple videos with identical post metadata download to separate files', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'weibo-multiple-video-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const video = id => ({
+    type: 'video',
+    data: { object_id: id, media_info: { stream_url: `data:video/mp4;base64,${Buffer.from(id).toString('base64')}` } },
+  })
+  const metadata = {
+    text_raw: '同一正文', created_at: '2026-07-15T07:37:05.000Z',
+    user: { id: '8', screen_name: '视频账号' },
+  }
+  const options = {
+    outputDir: root,
+    client: {
+      async getRaw() {
+        return {
+          ...metadata, id: 'top',
+          mix_media_info: { items: [video('first'), video('second')] },
+          retweeted_status: {
+            ...metadata, id: 'original', mix_media_info: { items: [video('third')] },
+          },
+        }
+      },
+    },
+  }
+  const result = await downloadPostMedia('top', options)
+  assert.deepEqual(result.files.map(file => path.basename(file.path)), [
+    '同一正文_2026-07-15_15-37-05_视频账号_v1.mp4',
+    '同一正文_2026-07-15_15-37-05_视频账号_v2.mp4',
+    '同一正文_2026-07-15_15-37-05_视频账号_retweeted_original_v1.mp4',
+  ])
+  for (const [index, file] of result.files.entries()) {
+    assert.equal(file.skipped, false)
+    assert.equal(await readFile(file.path, 'utf8'), ['first', 'second', 'third'][index])
+  }
+  const repeated = await downloadPostMedia('top', options)
+  assert.ok(repeated.files.every(file => file.skipped))
+})
+
 test('batch downloader filters by Beijing year and month before resolving media', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'weibo-month-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

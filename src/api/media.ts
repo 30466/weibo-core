@@ -1,4 +1,5 @@
 import { WeiboApiClient } from './client.js'
+import { htmlToText } from '../html.js'
 
 type RawObject = Record<string, any>
 
@@ -45,6 +46,9 @@ interface UnresolvedVideo {
   source: WeiboMediaSource
   sourcePostId: string
   index: number
+  title: string | null
+  publisherName: string | null
+  publishedAtRaw: string | null
 }
 
 export interface ParsedStatusMedia {
@@ -289,14 +293,20 @@ function videoItem(
   source: WeiboMediaSource,
   sourcePostId: string,
   index: number,
+  raw: RawObject,
 ): { item?: ResolvedMediaItem; unresolved?: UnresolvedVideo } {
+  const metadata = {
+    title: (typeof raw.text_raw === 'string' ? raw.text_raw : htmlToText(String(raw.text ?? ''))).trim() || null,
+    publisherName: String(raw.user?.screen_name ?? '').trim() || null,
+    publishedAtRaw: String(raw.created_at ?? '').trim() || null,
+  }
   const formats = parseVideoFormats(mediaInfo)
   if (!formats.length) {
     const fallback = fallbackFormat('direct', directUrl)
     if (fallback) formats.push(fallback)
   }
   const best = formats[0]
-  if (!best) return { unresolved: { id, source, sourcePostId, index } }
+  if (!best) return { unresolved: { id, source, sourcePostId, index, ...metadata } }
   return {
     item: {
       id,
@@ -311,7 +321,7 @@ function videoItem(
       bitrate: best.bitrate,
       mimeType: best.mimeType,
       quality: best.quality,
-      title: null,
+      ...metadata,
       expiresAt: best.expiresAt,
       formats,
     },
@@ -339,6 +349,7 @@ function parseOneStatus(raw: RawObject, source: WeiboMediaSource): ParsedStatusM
           source,
           sourcePostId,
           index,
+          raw,
         )
         if (result.item) items.push(result.item)
         if (result.unresolved) unresolvedVideos.push(result.unresolved)
@@ -370,6 +381,7 @@ function parseOneStatus(raw: RawObject, source: WeiboMediaSource): ParsedStatusM
           source,
           sourcePostId,
           index,
+          raw,
         )
         if (result.item) items.push(result.item)
         if (result.unresolved) unresolvedVideos.push(result.unresolved)
@@ -389,6 +401,7 @@ function parseOneStatus(raw: RawObject, source: WeiboMediaSource): ParsedStatusM
       source,
       sourcePostId,
       items.length + 1,
+      raw,
     )
     if (result.item) {
       items.push(result.item)
@@ -432,6 +445,7 @@ function parseOneStatus(raw: RawObject, source: WeiboMediaSource): ParsedStatusM
       source,
       sourcePostId,
       items.length + 1,
+      raw,
     )
     if (result.item) {
       items.push(result.item)
@@ -485,10 +499,7 @@ async function resolveLegacyVideo(video: UnresolvedVideo, client: WeiboApiClient
   const best = formats[0]
   if (!best) return null
   return {
-    id: video.id,
-    source: video.source,
-    sourcePostId: video.sourcePostId,
-    index: video.index,
+    ...video,
     kind: 'video',
     url: best.url,
     extension: extensionFromUrl(best.url, '.mp4'),
@@ -497,7 +508,6 @@ async function resolveLegacyVideo(video: UnresolvedVideo, client: WeiboApiClient
     bitrate: best.bitrate,
     mimeType: best.mimeType,
     quality: best.quality,
-    title: null,
     expiresAt: best.expiresAt,
     formats,
   }
